@@ -122,7 +122,7 @@ intersection( const Triangle_3<R>& T1, const Triangle_3<R>& T2 )
 
     if ( assign(s1,O1) ) {
 	if ( assign(s2,O2) )
-	    return intersection(s1,s2);
+	    return CEP::intersection::intersection(s1,s2);
 	bool intersection_is_point =  assign(p2,O2);
 	CGAL_assertion( intersection_is_point );
 	if ( s1.has_on(p2) )

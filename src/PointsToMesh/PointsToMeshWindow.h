@@ -16,7 +16,7 @@
 #include <QFileDialog>
 
 #if QT_VERSION >= 0x040000
-#include "ui_PointsToMeshProperties.Qt4.h"
+#include "ui_PointsToMeshProperties.h"
 
 #define BOOL_TO_STATE(X) ((X)?(Qt::Checked):(Qt::Unchecked))	
 

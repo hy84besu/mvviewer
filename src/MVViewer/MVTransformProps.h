@@ -10,7 +10,7 @@
 #ifndef MV_TRANSFORM_PROPS_H
 #define MV_TRANSFORM_PROPS_H
 
-#include "ui_MVTransformProps.Qt4.h"
+#include "ui_MVTransformProps.h"
 #include "MVData.h"
 
 #include <QDialog>
@@ -57,20 +57,8 @@ public:
 			data->mesh.move(doubleMoveX->value(),doubleMoveY->value(),doubleMoveZ->value());
 		}
 		else if (radioRotate->isChecked()) {
-
-			Affine_3 rx,ry,rz,r;
-			double ax= doubleRotateX->value()/180*PI;
-			double ay= doubleRotateY->value()/180*PI;
-			double az= doubleRotateZ->value()/180*PI;
-
-			rx = Affine_3(1,0,0,  0,cos(ax),sin(ax), 0,-sin(ax),cos(ax));
-			ry = Affine_3(cos(ay),0,-sin(ay),0,1,0, sin(ay),0,cos(ay));
-			rz = Affine_3(cos(az), sin(az),0,-sin(az),cos(az),0,0,0,1);
-
-			r = rx*ry*rz;
-
 			cout << "rotate" << endl;
-			data->mesh.rotate(r,radioRotateMeshOrigin->isChecked());
+			data->mesh.rotate(doubleRotateX->value(), doubleRotateY->value(), doubleRotateZ->value(), radioRotateMeshOrigin->isChecked());
 		}
 		else if(radioScale->isChecked()) {
 			cout << "scaling" << endl;

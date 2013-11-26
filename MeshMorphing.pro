@@ -14,8 +14,8 @@ macx {
 # Input
 HEADERS += src/MeshMorphing/MVAlgVerif.h \
            src/MeshMorphing/MVAlgVerifWindow.h
-FORMS += src/MeshMorphing/MeshMorphingProperties.Qt4.ui
-SOURCES += src/morphing_main.cc \
+FORMS += src/MeshMorphing/MeshMorphingProperties.ui
+SOURCES += src/MeshMorphing /morphing_main.cc \
            src/MeshMorphing/MVAlgVerif.cpp \
            src/MeshMorphing/MVAlgVerifWindow.cpp
 

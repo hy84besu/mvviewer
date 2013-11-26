@@ -49,6 +49,13 @@ typedef CGAL::Aff_transformation_3<Kernel> Aff_trans;
 #define CGAL_CFG_NO_AUTOMATIC_TEMPLATE_INCLUSION 1
 #include <CEP/intersection/Triangle_3_Triangle_3.h>
 
+#ifdef WITH_CGAL_BLAS
+#include <CGAL/Lapack/Linear_algebra_lapack.h>
+typedef CGAL::Lapack_matrix Linear_system_matrix;
+typedef CGAL::Lapack_vector Linear_system_vector;		
+typedef CGAL::Lapack_svd    Linear_system_solver;				
+#endif
+
 
 #define DEBUG_MESH 1
 #define DEBUG_SELF_INTERSECTIONS 0 // 0 - none; 1 - self intersections only ; 2 - 1 + choosing startup-triangle
@@ -59,7 +66,7 @@ typedef CGAL::Aff_transformation_3<Kernel> Aff_trans;
 #define MESH_BUILDER_WITH_HASHING 1
 #define SELF_INTER_REMOVAL_POSITIVE_NORMALS_ONLY 1
 #define SEED_METHOD 4 // 1 - visual hull; 2 - line; 3 - winding (slow); // 4 - winding (fast - using AABB trees)
-#define COMPUTE_CURVATURE_STATS 0
+#define COMPUTE_CURVATURE_STATS 1
 
 #define TO_DEG(X_RAD) (X_RAD*180.0/PI)
 
@@ -145,7 +152,7 @@ Mesh::Mesh()
 	is_search_init = false;
 	is_mapping_init = false;
 	curv_comp_method = Curv_Approx;
-	curv_comp_neigh_rings = 2; // currently only used by Dong
+	curv_comp_neigh_rings = 1; // currently only used by Dong
 	close_color_sigma = 0.99;
 	
 	interactive_colors_max_facet_no=-1;
@@ -258,38 +265,29 @@ void Mesh::clear ( bool cleanFilenames ) {
 	unlock();
 }
 
-
-float getNoise(float noise_sigma, int noise_type=0) {
-	float random_value=rand()*1.0f/RAND_MAX*noise_sigma;
-	if (rand()>RAND_MAX/2) random_value*=-1;
-	if (noise_type==0)
-		return random_value;
-	if (noise_type==1)
-		return GAUSSIAN(noise_sigma,random_value*4);
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-void Mesh::noise(float noise_sigma, char noise_mode, int noise_type) { //sigma always btw 0->1
-	assert((noise_sigma>=0.0f) && (noise_sigma<=1.0f));
-	lock();
-	if (noise_mode=='G') { // geometry
-		noise_sigma=noise_sigma*edge_avg;
-		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ )
+void Mesh::makeHole(Vertex *el, int noRings)
+{
+	// get the list of neighs to remove
+	std::vector< std::pair<Vertex*,float> > elems = getGeodesicNeighbourhood(*el,edge_avg*noRings,true);
+	std::map<Facet*,int> facet_map;
+	
+	for(int i=0;i<elems.size();i++) 
+	{
+		HV_circulator c = elems[i].first->vertex_begin();
+		HV_circulator d = c;
+		CGAL_For_all ( c, d )
 		{
-			vi->point() = vi->point() + Vector(getNoise(noise_sigma,noise_type),getNoise(noise_sigma,noise_type),getNoise(noise_sigma,noise_type));
-		}
-		
-	}
-	if (noise_mode=='C') { // colour
-		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ )
-		{
-			for(int j=0;j<3;j++)
-				vi->color[j] = std::min(std::max(vi->color[j]+getNoise(noise_sigma,noise_type),0.0f),1.0f);
+			if (c->is_border()==false) facet_map[&(*c->facet())] = 1;
 		}
 	}
-	unlock();
+	for (std::map<Facet*,int>::iterator it=facet_map.begin();it!=facet_map.end();it++)
+		p.erase_facet(it->first->halfedge());
+	
 	updateMeshData();
+	resetSimplexIndices();
+	
 }
+
 
 
 void Mesh::displayInfo() {
@@ -303,7 +301,9 @@ void Mesh::displayInfo() {
 	cout << " - edge stats: min = " << edge_min <<  "; avg = " << edge_avg << "; max = " << edge_max << endl;
 	cout << " - area stats: min = " << area_min <<  "; avg = " << area_avg << "; max = " << area_max << endl;
 	cout << " - laplacian stats: min = " << laplacian_min <<  "; avg = " << laplacian_avg <<  ";  max = " << laplacian_max << endl;
-//	cout << " - mean_curvature stats: min = " << curvature_min <<  "; avg = " << curvature_avg << "; std_dev=" << curvature_std_dev << ";  max = " << curvature_max << endl;	
+#ifdef COMPUTE_CURVATURE_STATS
+    cout << " - mean_curvature stats: min = " << curvature_min <<  "; avg = " << curvature_avg << "; std_dev=" << curvature_std_dev << ";  max = " << curvature_max << endl;
+#endif
 	
 	bool has_nan = false;
 	for ( Vertex_iterator v=p.vertices_begin();v!=p.vertices_end();v++ )
@@ -378,12 +378,65 @@ float* Mesh::getBoundingBox() {
 
 
 //////////////////////////////////////////////////////////////////////////////////////////
-std::vector< std::pair<Vertex*,int> > Mesh::getNeighbourhood(Vertex& v,int ring_size) {
+std::vector< std::pair<Vertex*,int> > Mesh::getRingNeighbourhood(std::vector<Vertex*> vertices,int ring_size, bool include_original) {
+
+	std::map<Vertex*,int> orig_vertices;
+	
 	std::map<Vertex*,int> neigh_map;
-	std::queue<Vertex*> elems;
 	std::map<Vertex*,int>::iterator iter;	
 	
+	std::queue<Vertex*> elems;
+	std::vector< std::pair<Vertex*,int> > result;
+		
+	Vertex* el;
+	Vertex* next_el;
 
+	if (ring_size < 0) return result;	
+	// add base level	
+
+	for(int i=0;i<vertices.size();i++) {
+		Vertex *pV = vertices[i];
+		orig_vertices[pV] = 1;	// set the original vertices 
+		elems.push(pV);
+		neigh_map[pV]=0;
+		//	pV->set_color(0,0,0);
+		
+	}
+	
+	while (elems.size() > 0) {
+		el = elems.front(); elems.pop();
+		
+		if ((orig_vertices.find(el)!=orig_vertices.end()) || include_original) {
+			result.push_back(pair<Vertex*,int>(el,neigh_map[el]));
+		}
+		
+		//		el->set_color((1.0/ring_size)*(neigh_map[el]),0,0);
+		if (neigh_map[el]==ring_size) continue;
+		//circulate one ring neighbourhood
+		HV_circulator c = el->vertex_begin();
+		HV_circulator d = c;
+		CGAL_For_all ( c, d ) {
+			Vertex & next_el_v = *c->opposite()->vertex();
+ 			next_el = &(*(c->opposite()->vertex()));
+			iter=neigh_map.find(next_el);
+			if( iter == neigh_map.end() ) { // if the vertex has not been already taken
+				elems.push(next_el);
+				neigh_map[next_el]=neigh_map[el]+1;
+			}
+		}
+	}
+	
+	return result;
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+std::vector< std::pair<Vertex*,int> > Mesh::getRingNeighbourhood(Vertex& v,int ring_size, bool include_original) {
+	std::map<Vertex*,int> neigh_map;
+	std::map<Vertex*,int>::iterator iter;	
+
+	std::queue<Vertex*> elems;
 	std::vector< std::pair<Vertex*,int> > result;
 
 	Vertex* el;
@@ -392,10 +445,12 @@ std::vector< std::pair<Vertex*,int> > Mesh::getNeighbourhood(Vertex& v,int ring_
 	elems.push(&v);
 	neigh_map[&v]=0;
 //	v.set_color(0,0,0);
+	
+	if (ring_size < 0) return result;
 
 	while (elems.size() > 0) {
 		el = elems.front(); elems.pop();
-		if (el != &v) {
+		if ((el != &v) || include_original) {
 			result.push_back(pair<Vertex*,int>(el,neigh_map[el]));
 		}
 			
@@ -417,6 +472,58 @@ std::vector< std::pair<Vertex*,int> > Mesh::getNeighbourhood(Vertex& v,int ring_
 
 	return result;
 }
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+std::vector< std::pair<Vertex*,float> > Mesh::getGeodesicNeighbourhood(Vertex& v,float geo_radius, bool include_original) {
+	std::map<Vertex*,float> neigh_map;
+	std::map<Vertex*,float>::iterator iter;	
+	std::vector< std::pair<Vertex*,float> > result;
+
+	std::queue<Vertex*> elems;
+	
+	Vertex* el;
+	Vertex* next_el;
+	// add base level	
+	elems.push(&v);
+	neigh_map[&v]=0;
+	
+	while (elems.size() > 0) {
+		el = elems.front(); elems.pop();
+		if ((el != &v) || include_original) {
+			result.push_back(pair<Vertex*,float>(el,0)); // the geo distance is added @ the end
+		}
+		
+//		if (v.id==0) el->set_color((neigh_map[el]/geo_radius),0,0);
+
+		//circulate one ring neighbourhood
+		HV_circulator c = el->vertex_begin();
+		HV_circulator d = c;
+		CGAL_For_all ( c, d ) {
+			Vertex & next_el_v = *c->opposite()->vertex();
+ 			next_el = &(*(c->opposite()->vertex()));
+			float dist = neigh_map[el] + v_norm(next_el->point()-el->point());						
+			iter=neigh_map.find(next_el);
+			if( iter == neigh_map.end()) { // if the vertex has not been already taken
+				if (dist<geo_radius) {
+					elems.push(next_el);
+					neigh_map[next_el]=dist;
+				}
+			}
+			else {
+				if (neigh_map[next_el] > dist)
+					neigh_map[next_el] = dist;
+			}
+		}
+	}
+	
+	// meanwhile we might have found a shorter path to get there
+	for(int i=0;i<result.size();i++)
+		result[i].second = neigh_map[result[i].first];
+	
+	return result;
+}
+
 
 void Mesh::create_center_vertex ( Facet_iterator f )
 {
@@ -526,7 +633,7 @@ void Mesh::remeshWithThreshold ( float edge_threshold )
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-void Mesh::remesh ( int method )
+void Mesh::remesh ( int method, int steps )
 {
 	lock();
 	//computeMeshStats();
@@ -539,16 +646,16 @@ void Mesh::remesh ( int method )
 	switch (method) {
 			
 		case Remesh_Sqrt3:
-			CGAL::Subdivision_method_3::Sqrt3_subdivision ( p,1 );
+			CGAL::Subdivision_method_3::Sqrt3_subdivision ( p, steps );
 			break;
 		case Remesh_Loop:
-			CGAL::Subdivision_method_3::Loop_subdivision ( p,1 );
+			CGAL::Subdivision_method_3::Loop_subdivision ( p, steps );
 			break;
 		case Remesh_CatmullClark:
-			CGAL::Subdivision_method_3::CatmullClark_subdivision ( p,1 );
+			CGAL::Subdivision_method_3::CatmullClark_subdivision ( p, steps );
 			break;
 		case Remesh_DooSabin:
-			CGAL::Subdivision_method_3::DooSabin_subdivision ( p,1 );
+			CGAL::Subdivision_method_3::DooSabin_subdivision ( p, steps );
 			break;
 		default:
 			printf("Unknown subdivision method !\n");
@@ -829,73 +936,475 @@ bool Mesh::saveFormat ( const char *filename, const char*file_type )
  */
 
 
-void Mesh::resetVertexIndices() {
+void Mesh::resetSimplexIndices(bool bResetVertices, bool bResetFacets) {
 	int id=0;
-	for ( Vertex_iterator vi= p.vertices_begin(); vi != p.vertices_end();vi++ ) {
-		vi->id = id++;
-	}	
+	
+	
+	if (bResetVertices)
+	{
+		id = 0;
+		for ( Vertex_iterator vi= p.vertices_begin(); vi != p.vertices_end();vi++ ) {
+			vi->id = id++;
+		}	
+	}
+
+	if (bResetFacets)
+	{
+		id = 0;
+		for ( Facet_iterator fi= p.facets_begin(); fi != p.facets_end(); fi++ ) {
+			fi->id = id++;
+		}	
+	}
+	
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+// A modifier creating a triangle with the incremental builder.
+template <class HDS, class K>
+class Mesh_Loader : public CGAL::Modifier_base<HDS> {
+private:
+	
+	std::vector< std::vector<float> > vertices;
+	std::vector< std::vector<int> > triangle_vertices;
+	bool bFoundProblems;
+public:
+enum EVertexAttribs { EVertexX, EVertexY, EVertexZ, EVertexR, EVertexG, EVertexB, EVertexAlpha, EVertexQuality, EVertexIgnore, EVertexNoAttribs};
+	
+	////////////////////////////////////////////////////////////////////////////////////
+	Mesh_Loader() { bFoundProblems = false;}
+	
+	bool hasFoundProblems()
+	{
+		return bFoundProblems;
+	}
+	
+	void addVertex(std::vector<float> & params) // EVertexNoAttribs
+	{
+		vertices.push_back(params);
+	}
+	
+	void addTriangle(std::vector<int>& params)
+	{
+		triangle_vertices.push_back(params);
+	}
+	
+	
+	void operator() ( HDS& hds ) {
+		
+		CGAL::Polyhedron_incremental_builder_3<HDS> B ( hds, false );
+		B.begin_surface ( vertices.size(), triangle_vertices.size() );
+		
+		typedef typename HDS::Vertex   Vertex;
+		typedef typename Vertex::Point Point;
+		
+		// add the vertices		
+		for(int i=0;i<vertices.size();i++)
+		{
+			Vertex_handle new_v = B.add_vertex ( Point(vertices[i][EVertexX],vertices[i][EVertexY],vertices[i][EVertexZ] ));
+			new_v->id = i;
+			for(int c=0;c<3;c++)
+				new_v->color[c] = vertices[i][c+3];
+			new_v->quality_imported() = vertices[i][EVertexQuality];
+		}
+		
+		// add the facets
+		bool bWarnings=false;
+		for(int i=0;i<triangle_vertices.size();i++)
+		{
+			Halfedge_handle h=NULL;
+			std::vector< std::size_t> newFacetIdx;
+			for ( int k=0;k<3;k++ )
+					newFacetIdx.push_back( triangle_vertices[i][k] );
+			
+			if (B.test_facet(newFacetIdx.begin(),newFacetIdx.end()))
+				h = B.add_facet(newFacetIdx.begin(),newFacetIdx.end());
+			else
+			{
+				if (!bWarnings)
+				{
+					cout << "WARNING: following facet(s) violate the manifold constraint (will be ignored):";
+					bWarnings=true;
+					bFoundProblems=true;
+				}
+				cout << " " << i;
+				cout.flush();
+				
+			}
+
+			if (h!=NULL)
+			{
+				h->facet()->id = i;
+			}
+			
+		}
+		if (bWarnings) cout << endl;
+		
+		if (B.check_unconnected_vertices())
+		{
+			//B.remove_unconnected_vertices();
+			cout << "WARNING: unconnected vertices exists. They will be removed" << endl;
+		}
+		B.end_surface();
+	}
+}; //Mesh_Loader
+typedef Mesh_Loader<HalfedgeDS,Kernel> MeshLoader;
+
+
+float readTypeFromStream(std::ifstream &is, std::string type, bool bBinary)
+{
+	if (bBinary==false)
+	{
+		float i;
+		is >> i;
+		return i;
+	}
+	if (type.compare("uchar")==0)
+	{
+		unsigned char i;
+		is.read(reinterpret_cast < char * > (&i), sizeof(i));
+		return i;
+	}
+
+	if (type.compare("int")==0)
+	{
+		int i;
+		is.read(reinterpret_cast < char * > (&i), sizeof(i));
+		return i;
+	}
+
+	if (type.compare("float")==0)
+	{
+		float i;
+		is.read(reinterpret_cast < char * > (&i), sizeof(i));
+		return i;
+	}
+	
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-bool Mesh::loadFormat ( const char *filename, bool rememberFilename )
+Mesh::MeshReturnCodes Mesh::loadFormat ( const char *filename, bool rememberFilename )
 {
-	if (filename==NULL) return true;
+	std::string token;
+	float tmpValue;
+
+	bool isCOFF=false;
+	bool isOFF=false;	
+	bool isPLY=false;	
+	if (filename==NULL) return MeshFileNotFound;
 	lock();	
+	
+#define DEBUG_LOAD(X)
 	
 	clear ( rememberFilename );
 	
-	ifstream is ( filename );
-	is >> p;
+	ifstream is;
 	if ( rememberFilename )
 	{
 		loaded_filename = new char[strlen ( filename ) +1];
 		strcpy ( loaded_filename,filename );
 		
-		//		loaded_file_type = new char[strlen(file_type)+1];
-		//		strcpy(loaded_file_type,file_type);
 	}
-	
-	cout << "* Loading mesh: " << filename << " - " << p.size_of_facets() << " facets, " << p.size_of_vertices() << " vertices and " << p.size_of_border_edges() << " border edges." ;
-	cout.flush();
-	is.close();
-	// process colors
+
 	is.open(filename);
-	is.width (5);
-	char mesh_type[5];
-	is>> mesh_type;
-	if ( (strcmp(mesh_type,"COFF")==0) || (strcmp(mesh_type,"coff")==0) ) {
-		cout << " (with colors).";
-		cout.flush();
-		is.width(1000);
-		float tmpValue;
+	if (!is.is_open()) 
+	{
+		cout << "could not open file." << endl;
+		return 	MeshFileNotFound;
+	}
+	is >> token;
+
+	// supported formats
+	isPLY=(token.compare("PLY")==0) || (token.compare("ply")==0);
+	isOFF=(token.compare("OFF")==0) || (token.compare("off")==0);
+	isCOFF=(token.compare("COFF")==0) || (token.compare("coff")==0);
+
+	// initialize mesh build structure and misc structures
+	MeshLoader builder;
+	std::vector<float>			newVertex;
+	std::vector<int>			newVertexIdx;	
+	std::vector<std::string>	newVertexAttribTypes;
+	int noVertexAttribs = MeshLoader::EVertexNoAttribs;
+	int iIgnoreIdx=MeshLoader::EVertexIgnore;	
+	std::vector<int>			newTriangle;
+	std::vector<std::string>	newFaceAttribTypes;	
+	int							iNoVertices;
+	int							iNoTriangles;
+	
+	for(int i=0;i<noVertexAttribs;i++) 
+	{	
+		newVertex.push_back(0.0f);
+		newVertexIdx.push_back(i);	
+	}
+	for(int i=0;i<3;i++) newTriangle.push_back(-1);
+	
+	if(isOFF || isCOFF) 
+	{
+		is >> iNoVertices; is >> iNoTriangles; is >> tmpValue;
 		
-		is >> tmpValue; is >> tmpValue; is >> tmpValue;
-		int id=0;
-		for ( Vertex_iterator vi= p.vertices_begin(); vi != p.vertices_end();vi++ ) {
-			is >>tmpValue; is >>tmpValue; is >>tmpValue;
-			is >> vi->color[0]; is >> vi->color[1]; is >> vi->color[2];
-			is >>tmpValue;
-			//		cout << "read " << vi->motion_vec << endl;
+		cout << "* Loading " << token << " mesh: " << filename << " (" << iNoTriangles << " facets, " << iNoVertices << " vertices)";
+		if (isCOFF) cout << " (with colors).";
+		cout << endl;
+
+		float normFactor=1.0f;
+		bool isNormFactorSet=false;
+
+		// process vertices
+		for ( int i=0; i < iNoVertices; i++ ) {			
+			for(int k=0;k<3;k++)
+				is >> newVertex[k]; 
+			if (isCOFF)
+			{
+				for(int k=3;k<6;k++)
+					is >> newVertex[k]; 
+				is >>tmpValue;
+
+				if (!isNormFactorSet){
+					if (tmpValue>1) normFactor=255.0f;
+					isNormFactorSet = true;
+				}
+				for(int k=0;k<3;k++)
+					newVertex[3 + k] /= normFactor;
+				newVertex[MeshLoader::EVertexQuality] = (newVertex[3] + newVertex[4] + newVertex[5]) / 3;
+			}
+			builder.addVertex(newVertex);
+			DEBUG_LOAD(
+			cout << " - vertex " ;
+			for(int i=0;i<6;i++) 
+				cout << newVertex[i] << " ";
+			cout << endl;
+			)
+				
+		}
+
+		// process triangles
+		for ( int i=0; i < iNoTriangles; i++ ) {			
+			int noVertsPerFacet;
+			is >>noVertsPerFacet;			
+			
+			if (noVertsPerFacet != 3)
+			{
+				cout << "\nWARNING: only triangular meshes are supported - ignoring facet";
+			}
+			
+			for(int k=0;k<noVertsPerFacet;k++)
+			{
+				if (k<3)
+					is >> newTriangle[k]; 
+				else
+					is >> tmpValue;
+					
+			}
+			// skip any other text until the next line
+			char buff[256];
+			is.getline (buff,256);
+
+			DEBUG_LOAD(
+			cout << " - triangle " ;
+			for(int i=0;i<3;i++) 
+				cout << newTriangle[i] << " ";
+			cout << endl;
+			)
+
+			builder.addTriangle(newTriangle);
+			
+		}
+	} // OFF
+	
+	if (isPLY)
+	{
+		std::string line;
+		
+		// by default mark all the vertex properties as ignored
+		for(int i=0;i<noVertexAttribs;i++) newVertexIdx.push_back(iIgnoreIdx);	
+		
+		bool bSupportedFormat=false;
+		bool bBinary=false;		
+		
+		int iCurrentPropType = 0; // 0 - not defined; 1 - vertices; 2 - facets;
+		int iNoVertexAttribs=0; // vertex attrib index
+		int iNoFaceAttribs=0; // facet attrib index		
+		
+		string sVertexAttribs;
+
+		//process header
+		while (getline(is,line))
+		{
+			std::stringstream ss(line);
+			ss >> token; // first word
+			if (token.compare("end_header")==0) break;
+
+			if (token.compare("format")==0 && (line.find("1.0")!=string::npos)) 
+			{
+				ss >> token;
+				if (token.compare("ascii")==0) 
+				{
+					bSupportedFormat=true;
+					bBinary = false;
+					continue;
+				}
+				else 
+				if (token.compare("binary_little_endian")==0) 
+				{
+					bSupportedFormat=true;
+					bBinary=true;
+					continue;
+				}
+				{
+					cout << "ERROR: unexpected property field:" << line <<  endl;
+					bSupportedFormat = false;
+					break;
+				}
+			}
+			
+			if (token.compare("element")==0) 
+			{
+				ss >> token;
+				if (token.compare("vertex")==0)
+				{
+					ss >> iNoVertices;
+					iCurrentPropType = 1;
+					continue;
+				}
+				else if (token.compare("face")==0)				
+				{
+					ss >> iNoTriangles;
+					iCurrentPropType = 2;
+					continue;
+				}
+				else
+				{
+					cout << "ERROR: unexpected token" << token << " after element" << endl;
+					break;
+				}
+			}
+			
+			if (token.compare("property")==0) 
+			{
+				if (iCurrentPropType==0) 
+				{
+					cout << "ERROR: unexpected property field:" << line <<  endl;
+					bSupportedFormat = false;
+					break; // we do not expect this type of record now
+				}
+
+				if (iCurrentPropType==1)  // vertices
+				{
+					string sPropDataType;
+					ss >> sPropDataType; // property data type
+					ss >> token;
+					
+					//save datatype
+					newVertexAttribTypes.push_back(sPropDataType);
+					
+					//set appropriate index
+					if (token.compare("x")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexX;
+					if (token.compare("y")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexY;
+					if (token.compare("z")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexZ;				
+					if (token.compare("red")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexR;
+					if (token.compare("green")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexG;
+					if (token.compare("blue")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexB;
+					if (token.compare("alpha")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexAlpha;
+					if (token.compare("quality")==0) newVertexIdx[iNoVertexAttribs]=MeshLoader::EVertexQuality;
+
+					sVertexAttribs = sVertexAttribs + " " + token;
+
+					iNoVertexAttribs++;
+					
+				}
+				if (iCurrentPropType==2)  // facets
+				{
+					ss >> token; 
+					if (token.compare("list")!=0)
+					{
+						cout << "ERROR: unexpected property token " << token << endl;
+						bSupportedFormat = false;
+						break;
+					}
+					
+					for(int i=0;i<2;i++)
+					{
+						ss >> token;
+						newFaceAttribTypes.push_back(token);
+						iNoFaceAttribs++;
+					}
+				}				
+
+			}
+		}
+		if (iNoFaceAttribs!=2)
+		{
+			cout << "ERROR: property list not found for faces" << endl;
+			bSupportedFormat = false;
+		}
+		if (iNoVertexAttribs<3)
+		{
+			cout << "ERROR: at least 3 properties expected for the vertices" << endl;
+			bSupportedFormat = false;
+		}
+		
+		if (bSupportedFormat)
+		{
+			cout << "* Loading PLY mesh: " << filename << " (" << iNoTriangles << " facets, " << iNoVertices << " vertices=[" << sVertexAttribs << "])" << endl;
+			
+			float normFactor=1.0f;
+			bool isNormFactorSet=false;
+			
+			// process vertices
+			for ( int i=0; i < iNoVertices; i++ ) {			
+				for(int k=0;k<iNoVertexAttribs;k++) newVertex[newVertexIdx[k]] = readTypeFromStream(is,newVertexAttribTypes[k],bBinary); 
+				builder.addVertex(newVertex);
+				DEBUG_LOAD(
+						   cout << " - vertex " ;
+						   for(int i=0;i<6;i++) 
+						   cout << newVertex[i] << " ";
+						   cout << endl;
+						   )
+			}
+			
+			// process triangles
+			for ( int i=0; i < iNoTriangles; i++ ) {			
+				int noVertsPerFacet;
+				noVertsPerFacet = readTypeFromStream(is,newFaceAttribTypes[0],bBinary);
+				
+				if (noVertsPerFacet != 3)
+				{
+					cout << "\nWARNING: only triangular meshes are supported - ignoring facet";
+				}
+				
+				for(int k=0;k<noVertsPerFacet;k++)
+				{
+					if (k<3)
+						newTriangle[k] = readTypeFromStream(is,newFaceAttribTypes[1],bBinary);
+					else
+						tmpValue = readTypeFromStream(is,newFaceAttribTypes[1],bBinary);
+					
+				}
+				
+				DEBUG_LOAD(
+						   cout << " - triangle " ;
+						   for(int i=0;i<3;i++) 
+						   cout << newTriangle[i] << " ";
+						   cout << endl;
+						   )
+				
+				builder.addTriangle(newTriangle);
+			}					
 		}
 	}
-	cout << endl;
+
+	p.delegate ( builder );		
+	cout << "* Loaded: " << p.size_of_facets() << " facets, " << p.size_of_vertices() << " vertices and " << p.size_of_border_edges() << " border edges." << endl;
 	
+//	resetSimplexIndices();
 	
-	if ( !p.is_pure_triangle() )
-	{
-		/*		cout << "Mesh it is not a pure triangle -> tesselate it !!!" << endl;
-		 Polyhedron p_new;
-		 PolyhedronTesselator<HalfedgeDS> polyTess(p);
-		 p_new.delegate(polyTess);
-		 */
-		cout << "Mesh it is not a pure triangle -> remeshing it !" << endl;
-		remesh();
-	}
-	
-	resetVertexIndices();
 	unlock();
-	updateMeshData();
-	return true;
+	updateMeshData(true);
+	if (builder.hasFoundProblems())
+		return MeshNonManifold;
+	else
+		return MeshOK;		
 }
 
 // assumes that it has the mesh already loaded
@@ -984,47 +1493,72 @@ void Mesh::dilate ( double delta ) {
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 //assumes that the quality has been copied in quality_prev 
 void Mesh::computeVertexConvolution(Vertex& v, float stddevratio) { 
-	HV_circulator vi = v.vertex_begin();
-	
 	float stddev=edge_avg*stddevratio;
-	float w=GAUSSIAN(stddev,0);
-	v.quality()=w*v.quality_prev();
-	float weights=w;
-	if ( vi!=NULL )
-		do
-		{
-			float dist=v_norm(vi->vertex()->point() - v.point());
-			w=GAUSSIAN(stddev,dist);
-			v.quality()+=vi->prev()->vertex()->quality_prev()*w;
+	float weights=0;
+
+#define CONVOLVE_GEODESIC_RINGS 0
+	if (CONVOLVE_GEODESIC_RINGS)
+	{
+		std::vector< std::pair<Vertex*,float> > elems = getGeodesicNeighbourhood(v,2*stddev,true);
+		v.quality() = 0;
+		for(int i=0;i<elems.size();i++) {
+			float value=elems[i].first->quality_prev();
+			float w= GAUSSIAN(stddev,elems[i].second);
+			v.quality()+=value*w;
 			weights+=w;
 		}
-	while ( ++vi != v.vertex_begin() );	
-//	v.vh_dist=rand()*1.0f/RAND_MAX;
-	if (weights!=0) v.quality()/=weights;
+	}
+	else
+	{
+		HV_circulator vi = v.vertex_begin();
+		
+		float w=GAUSSIAN(stddev,0);
+		v.quality()=w*v.quality_prev();
+		weights=w;
+		if ( vi!=NULL )
+			do
+			{
+				float dist=v_norm(vi->prev()->vertex()->point() - v.point());
+				w=GAUSSIAN(stddev,dist);
+				v.quality()+=vi->prev()->vertex()->quality_prev()*w;
+				weights+=w;
+			}
+			while ( ++vi != v.vertex_begin() );	
+		//	v.vh_dist=rand()*1.0f/RAND_MAX;
+
+	}
+	if (weights!=0) v.quality()/=weights;		
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // std_dev_ratio - ratio of the avg_edge
-void Mesh::convolve(double std_dev_ratio, bool add_to_history) {
+void Mesh::convolve(double std_dev_ratio, bool add_to_history, bool print_stats) {
 	lock();
 	for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ )
 		vi->quality_prev()=vi->quality();
 
 	for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) {
 		computeVertexConvolution(*vi,std_dev_ratio);
-		if (add_to_history)
-			vi->values.push_back((vi->quality()-vi->quality_prev()));
+		if (add_to_history) {
+			float quality_prev=vi->quality_prev();
+			if (vi->values.size() > 1) quality_prev= vi->values[vi->values.size()-2];
+			vi->values.push_back(vi->quality()); // the quality
+			vi->values.push_back((vi->quality()-quality_prev)); // the difference in adjacent qualities
+		}
+			
 	}
 
-	setVertexQuality(Qual_No_Computation);
+	setMeshQuality(Qual_No_Computation);
 
-	float lower_qual, upper_qual;	
-	computeQualityPercentileBoundaries(lower_qual,upper_qual,0.01);
-	cout << "values btw:" << lower_qual << " and " << upper_qual << endl;
+	if (print_stats) {
+		float lower_qual, upper_qual;	
+		computeQualityPercentileBoundaries(lower_qual,upper_qual,0.01);
+		cout << "values btw:" << lower_qual << " and " << upper_qual << endl;	
+	}
 	
 	unlock();
-	updateMeshData();
+	updateMeshData(false,false);
 }
 
 
@@ -1182,38 +1716,56 @@ void Mesh::diffuse ( float amount, int mode )
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-void Mesh::updateMeshData() {
+void Mesh::updateMeshData(bool bComputeCurvature, bool bComputeNormals) {
 	lock();
 	p.normalize_border();
 	
-	for ( Facet_iterator fi = p.facets_begin(); fi!=p.facets_end(); fi++ )
-		fi->computeNormal();
+	fRobustNormalMaxDistance = 5;
+	
+	if (bComputeNormals)
+	{
+		// compute triangle normals
+		for ( Facet_iterator fi = p.facets_begin(); fi!=p.facets_end(); fi++ )
+			fi->computeNormal();
+		
+		// compute vertex normal
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) 
+			computeVertexNormal( *vi );
+		
+		// compute robust vertex normal		
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) 
+			computeVertexRobustNormal( *vi, fRobustNormalMaxDistance );		
+	}
 
-	int count=0;
+	// compute laplacians
 	for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) {
-		//vi->id=count++;
 		vi->border()=false;
-		computeVertexNormal ( *vi );
 		computeVertexLaplacian( *vi );
 	}
+	
+	computeMeshStats();	
+		
+	// compute curvature and laplacian derivative
 	for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) {
-		computeVertexCurvature( *vi ); 
+		if (bComputeCurvature) computeVertexCurvature( *vi ); 
 		computeVertexLaplacianDeriv ( *vi );
 	}
 
+	// set border edges	
 	for (Halfedge_iterator hi = p.border_halfedges_begin(); hi!= p.halfedges_end(); hi++) {
 		hi->vertex()->border()=true;
 	}
 	
 	computeMeshStats();
 	
-	setVertexQuality(qual_mode);
+	setMeshQuality(qual_mode);
 	
 	is_search_init=false;
 	Neighbor_search_tree tmpSearch;
 	search_tree = tmpSearch;
 	//search_tree.clear();
 	is_mapping_init=false;
+	id_mapping.clear();
 	//vertex_mapping.clear();
 	unlock();
 //	computeMeshStats();
@@ -1380,6 +1932,7 @@ float Mesh::computeVertexStatistics ( Vertex& v, int mode )
 {
 	// CFL depends on the incident edges
 	CGAL_precondition ( ( mode>=0 ) && ( mode <=2 ) );
+	if (v.vertex_degree()==0) return 0;
 	HV_circulator h = v.vertex_begin();
 	float edge_stats = edge_size ( h );
 	int no_h=1;
@@ -1441,42 +1994,152 @@ void Mesh::computeVertexNormal ( Vertex& v )
 		}
 	}
 	if ( v_norm ( normal ) !=0 )
-		v.normal() = normal / v_norm ( normal );
+		normal = normal / v_norm ( normal ); 
+	
+	v.tmp_normal() = normal;
+	// only temporarily set here, it will be set in normal() when computing the robust measure
 }
 
 
-void Mesh::setVertexQuality(QualityComputationMethod qual) {
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+void Mesh::computeVertexRobustNormal ( Vertex& v, float maxGeodesic )
+{
+#ifdef USE_NORMAL_GEODESICS
+	vector<pair<Vertex*,float> > neighs = getGeodesicNeighbourhood(v,maxGeodesic,true);	
+	vector<pair<Vertex*,float> >::iterator n_it;
+#else
+	vector<pair<Vertex*,int> > neighs = getRingNeighbourhood(v,(int)maxGeodesic,true);
+	vector<pair<Vertex*,int> >::iterator n_it;	
+#endif	
+
+	Vertex::Normal_3 normal = CGAL::NULL_VECTOR;	
+	for(n_it=neighs.begin(); n_it!=neighs.end();n_it++) 
+	{
+		Vertex* neigh_v = n_it->first;
+		//float w = n_it->second  / maxGeodesic;
+		normal = normal + neigh_v->tmp_normal();//*w;
+	}
+	if ( v_norm ( normal ) !=0 )
+		normal = normal / v_norm ( normal );
+
+	v.normal() = normal;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+void Mesh::setMeshQuality(QualityComputationMethod qual) {
 	qual_mode = qual;
-	if (qual_mode!=Qual_No_Computation)
-		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) {
-			computeVertexQuality(*vi,qual_mode);
-		}
+/*
+ #ifdef WITH_CGAL_BLAS
+	if ( (qual_mode==Qual_Gaussian_Curv_Deriv) || (qual_mode==Qual_Mean_Curv_Deriv) || (qual_mode==Qual_Color_Deriv)) {
+		setMeshQualityViaLinearSystem(qual);
+		return;
+	}
+#endif
+*/ 
 	
+	if (qual_mode!=Qual_No_Computation) {
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ )
+		{
+			computeVertexQuality(*vi,qual_mode);
+			if (isnan(vi->quality()))
+			{
+				cout << "\r Error (NAN) while computing vertex quality type=" << qual << " for v=" << vi->id << "of degree=" << vi->vertex_degree() << endl;
+				vi->quality() = 0;
+			}
+
+		}
+			
+
+		// if computing gradients, set the quality from the norm
+		if ((qual_mode==Qual_Color_Deriv) || (qual_mode==Qual_Mean_Curv_Deriv) ||
+			(qual_mode==Qual_Gaussian_Curv_Deriv) || (qual_mode==Qual_Quality_Deriv))
+			for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ )
+			{	
+				vi->quality()=v_norm(vi->qual_vect);
+				if (isnan(vi->quality()))
+				{
+					cout << "\r Error (NAN) while computing vertex quality type=" << qual << " for v=" << vi->id << "of degree=" << vi->vertex_degree() << endl;
+					vi->quality() = 0;
+				}				
+			}
+	}
+
+	
+}
+
+void Mesh::setMeshQualityViaLinearSystem(QualityComputationMethod qual) {
+#ifdef WITH_CGAL_BLAS
+	if ( (qual_mode==Qual_Gaussian_Curv_Deriv) || (qual_mode==Qual_Mean_Curv_Deriv) || (qual_mode==Qual_Color_Deriv)) {
+		int no_elems  = 0;
+
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) 
+			no_elems += vi->vertex_degree();
+
+
+		Linear_system_matrix solve_matrix(no_elems,p.size_of_vertices()*3);
+		Linear_system_vector solve_vector(no_elems);
+		Linear_system_solver solver;
+		cout << "setting up matrix of size " << solve_matrix.number_of_rows() << "x" << solve_matrix.number_of_columns() << endl;
+			
+		int i=-1;
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) {
+			HV_circulator c = vi->vertex_begin();
+			HV_circulator d = c;
+			
+			Vector deriv=Vector(0,0,0); 
+			CGAL_For_all ( c, d )
+			{
+				Vector direction = c->opposite()->vertex()->point() - vi->point();
+				float dir_norm = v_norm(direction);
+				direction=v_normalized(direction);
+				float local_deriv = computeVertexDirectionalGradient(*vi,*(c->opposite()->vertex()),qual);
+				
+				i++;
+				int j=c->opposite()->vertex()->id;
+				//cout << "setting elements" << i << "," << j << endl;
+				solve_matrix.set(i,3*j+0,direction.x());
+				solve_matrix.set(i,3*j+1,direction.y());
+				solve_matrix.set(i,3*j+2,direction.z());
+				solve_vector.set(i,local_deriv);
+				
+			} //neighbourhood loop
+		} // all vertices loop
+		cout << "done setting all the elements" << endl;
+		float condition = solver.solve(solve_matrix,solve_vector);
+		cout << "done solving the system" << endl;
+
+		i=0;
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++,i++ ) {
+			vi->qual_vect=Vector(solve_vector(3*i+0),solve_vector(3*i+1),solve_vector(3*i+2));
+			vi->quality()=v_norm(vi->qual_vect);
+			
+		}
+		
+		// need to set the function now
+	} // if qual mode is deriv
+#endif
 }
 
 /*this is run within the updateMeshData() */
 void Mesh::computeVertexQuality(Vertex& v, QualityComputationMethod qual) {
 	switch (qual) {
+		case Qual_Imported:
+			v.quality()=v.quality_imported();
+			break;			
 		case Qual_Color:
 			v.quality()=(v.color[0] + v.color[1] + v.color[2])/3;
 			break;			
-		case Qual_Color_Deriv:
-			v.qual_vect=computeVertexGradient(v,qual);
-			v.quality()=v_norm(v.qual_vect);
-			break;
 		case Qual_Mean_Curv:
 			v.quality()=v.mean_curvature();
-			break;
-		case Qual_Mean_Curv_Deriv:
-			v.qual_vect=computeVertexGradient(v,qual);
-			v.quality()=v_norm(v.qual_vect);
 			break;
 		case Qual_Gaussian_Curv:
 			v.quality()=v.gaussian_curvature();			
 			break;
+		case Qual_Color_Deriv:
+		case Qual_Mean_Curv_Deriv:
 		case Qual_Gaussian_Curv_Deriv:
+		case Qual_Quality_Deriv:
 			v.qual_vect=computeVertexGradient(v,qual);
-			v.quality()=v_norm(v.qual_vect);
 			break;
 	} 
 }
@@ -1484,9 +2147,36 @@ void Mesh::computeVertexQuality(Vertex& v, QualityComputationMethod qual) {
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
+float Mesh::computeVertexDirectionalGradient ( Vertex& v, Vertex& dir_u, QualityComputationMethod qual) {
+	
+	float local_deriv = 0.0f;
+	if (qual==Qual_Color_Deriv) {
+		for (int i=0;i<3;i++) local_deriv+=(dir_u.color[i] - v.color[i]);
+		local_deriv/=3;			
+	}
+	else if (qual==Qual_Mean_Curv_Deriv) {
+		local_deriv=(dir_u.mean_curvature() - v.mean_curvature());			
+	}
+	else if (qual==Qual_Gaussian_Curv_Deriv) {
+		local_deriv=(dir_u.gaussian_curvature() - v.gaussian_curvature());			
+	}
+	else if (qual==Qual_Quality_Deriv) {
+		local_deriv=(dir_u.quality() - v.quality());			
+	}
+	else {
+		cout << " INVALID qual in computeVertexGradient" << endl;
+	}
+
+	return local_deriv;
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 Vector Mesh::computeVertexGradient ( Vertex& v, QualityComputationMethod qual)
 {
-	
+#if WITH_CGAL_BLAS
+	return computeVertexGradientViaLinearSystem(v,qual);
+#endif	
 	
 	HV_circulator c = v.vertex_begin();
 	HV_circulator d = c;
@@ -1500,28 +2190,70 @@ Vector Mesh::computeVertexGradient ( Vertex& v, QualityComputationMethod qual)
 		//		cout << "edge=" << edge_avg << " norm=" << v_norm(direction) << " guassian = " << GAUSSIAN(edge_avg,v_norm(direction)) << endl;
 		//direction=v_normalized(direction)*GAUSSIAN(edge_avg,v_norm(direction));
 		direction=v_normalized(direction);
-		float local_deriv = 0.0f;
-		if (qual==Qual_Color_Deriv) {
-			for (int i=0;i<3;i++) local_deriv+=(c->opposite()->vertex()->color[i] - v.color[i]);
-			local_deriv/=3;			
-		}
-		else if (qual==Qual_Mean_Curv_Deriv) {
-			local_deriv=(c->opposite()->vertex()->mean_curvature() - v.mean_curvature());			
-		}
-		else if (qual==Qual_Gaussian_Curv_Deriv) {
-			local_deriv=(c->opposite()->vertex()->gaussian_curvature() - v.gaussian_curvature());			
-		}
-		else {
-			cout << " INVALID qual in computeVertexGradient" << endl;
-		}
-			
+		float local_deriv = computeVertexDirectionalGradient(v,*(c->opposite()->vertex()),qual);
+
 		if (dir_norm!=0) 
 			deriv = deriv + direction*local_deriv;//dir_norm;
 		
 	}
-	deriv=deriv/v.vertex_degree();
+	if (v.vertex_degree()>0) deriv=deriv/v.vertex_degree();
 	return deriv;
 }
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+Vector Mesh::computeVertexGradientViaLinearSystem ( Vertex& v, QualityComputationMethod qual)
+{
+#ifdef WITH_CGAL_BLAS	
+	int no_elems  = v.vertex_degree()+1;
+	
+	CGAL::Lapack_matrix solve_matrix(no_elems,3);
+	CGAL::Lapack_vector solve_vector(no_elems);
+	CGAL::Lapack_svd solver;
+	
+	HV_circulator c = v.vertex_begin();
+	HV_circulator d = c;
+	
+	Vector deriv=Vector(0,0,0.000000001f); 
+	if(no_elems==1) return deriv; // isolated vertex
+	int i=-1;
+	CGAL_For_all ( c, d )
+	{
+		i++;
+		Vector direction = c->prev()->vertex()->point() - v.point();
+		float dir_norm = v_norm(direction);
+		direction=v_normalized(direction);
+		float local_deriv = computeVertexDirectionalGradient(v,*(c->opposite()->vertex()),qual);//dir_norm;
+
+		solve_matrix.set(i,0,direction.x());
+		solve_matrix.set(i,1,direction.y());
+		solve_matrix.set(i,2,direction.z());
+		solve_vector.set(i,local_deriv);
+		
+	}
+	i++;
+	solve_matrix.set(i,0,v.normal().x());
+	solve_matrix.set(i,1,v.normal().y());
+	solve_matrix.set(i,2,v.normal().z());
+	solve_vector.set(i,0);
+	
+//	deriv=deriv/v.vertex_degree();
+	float condition = solver.solve(solve_matrix,solve_vector);
+	deriv = Vector(solve_vector(0),solve_vector(1), solve_vector(2));
+	//printf("%.1f ",condition);
+	//printf("angle btw deriv and normal is %f\n",v_angle(deriv,v.normal()));
+	if (condition>50) 
+		return Vector(0,0,0.00000001f);
+	else 
+		return deriv;
+#endif
+}
+
+
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // Precondition: Assumes that the gradient is already computed in quality(), dir_1, dir_2 are normalized
@@ -1661,63 +2393,92 @@ void Mesh::computeVertexCurvature( Vertex& v) {
 		if (mean_curv_normal*v.normal()>0)
 			mean_curv = -mean_curv;
 	} else if (curv_comp_method==Curv_Dong) { //Dong et al.
-		//HV_circulator vi = v.vertex_begin();
-		Vertex* vi, *prev_vi;
-		Vector tmp_pi_p,ti;
+
+		Vertex *vi;
+		Vector vi_vect,ti;
 		float kn_ti;
 		
 		float max_kn=-MAXFLOAT;
-		Vector axis1; //first system of coordinates;
-		if ( vi!=NULL ) {
-			vector<pair<Vertex*,int> > neighs = getNeighbourhood(v,curv_comp_neigh_rings);
-			for(int i=0;i<neighs.size();i++) {
-				vi=neighs[i].first;
-				prev_vi=neighs[(i-1)%neighs.size()].first;
-//			do {
-				tmp_pi_p = prev_vi->point() - vi->point();
-				ti = tmp_pi_p - (tmp_pi_p*vi->normal())*vi->normal();
-				ti = v_normalized(ti);
-				kn_ti = - (tmp_pi_p*(prev_vi->normal() - vi->normal())) / (tmp_pi_p*tmp_pi_p);
-				//caching the results
-				prev_vi->delta_tmp = ti;
-				prev_vi->delta_normalization= kn_ti;
-				//compute max
-				if (max_kn<kn_ti) {
-					max_kn = kn_ti;
-					axis1=ti;
-				}
+		float min_kn=MAXFLOAT;		
+		Vector axis1; //system of coordinates;
+
+		//	curv_comp_neigh_rings
+
+		float geodesicDist = max(edge_avg*1.2f,(double)getSurfacePercentageRadius(curv_comp_neigh_rings));
+//			int normalizedRings = max(2,(int)round(sqrt((1/100.0)*area_avg*p.size_of_facets()/(4*PI))/edge_avg));
+		vector<pair<Vertex*,int> > neighs = getRingNeighbourhood(v,curv_comp_neigh_rings,false);
+//		vector<pair<Vertex*,float> > neighs = getGeodesicNeighbourhood(v,geodesicDist,false);			
+		
+//			cout << "v=" << v.id << " neighs=" << neighs.size() << " for g=" << geodesicDist << endl;
+		for(int i=0;i<neighs.size();i++) 
+        {
+			vi=neighs[i].first;
+			vi_vect = vi->point() - v.point();
+			ti = vi_vect - (vi_vect*v.normal())*v.normal();
+			ti = v_normalized(ti);
+			kn_ti = - (vi_vect*(vi->normal() - v.normal())) / (vi_vect*vi_vect);
+			//caching the results
+			vi->delta_tmp = ti;
+			vi->delta_normalization= kn_ti;
+			//compute max
+			if (max_kn<kn_ti) {
+				max_kn = kn_ti;
+				axis1=ti;
 			}
-//			} while ( ++vi != v.vertex_begin() );
-			
-			float a11 = 0; float a12 = 0; float a21 = 0; float a22 = 0; float a13 = 0; float a23 = 0;
-			float theta_i;
-//			vi = v.vertex_begin();
-			float a,b,c;
-			a = max_kn;
-			for(int i=0;i<neighs.size();i++) {
-				vi=neighs[i].first;
-				prev_vi=neighs[(i-1)%neighs.size()].first;
-//			do {
-				//restoring the results
-				ti = prev_vi->delta_tmp;
-				kn_ti = prev_vi->delta_normalization;
-				//compute
-				theta_i = v_angle(axis1,ti);
-				a11 += SQUARED(cos(theta_i)*sin(theta_i));
-				a12 += cos(theta_i)*sin(theta_i)*sin(theta_i)*sin(theta_i);
-				a22 += sin(theta_i)*sin(theta_i)*sin(theta_i)*sin(theta_i);
-				a13 += (kn_ti-a*SQUARED(cos(theta_i)))*cos(theta_i)*sin(theta_i);
-				a23 += (kn_ti-a*SQUARED(cos(theta_i)))*sin(theta_i)*sin(theta_i);
-//			} while ( ++vi != v.vertex_begin() );
+			if (min_kn>kn_ti) {
+				min_kn = kn_ti;
 			}
-			a21 = a12;
-			b = (a13*a22 - a23*a12)/(a11*a22-SQUARED(a12));
-			c = (a11*a23 - a12*a13)/(a11*a22-SQUARED(a12));
 			
-			gaussian_curv= a*c - SQUARED(b)/4;
-			mean_curv  = (a+c)/2;
-			//mean_curv = 2*mean_curv / computeVertexStatistics(v,1);
 		}
+		if (neighs.size()==0)
+		{
+			max_kn = 0; min_kn=0;
+		}
+		
+		float a11 = 0; float a12 = 0; float a21 = 0; float a22 = 0; float a13 = 0; float a23 = 0;
+		float theta_i;
+
+		float a,b,c;
+		a = max_kn;
+		for(int i=0;i<neighs.size();i++) 
+        {
+			vi=neighs[i].first;
+			//restoring the results
+			ti = vi->delta_tmp;
+			kn_ti = vi->delta_normalization;
+			//compute
+			theta_i = v_angle(axis1,ti);
+			float cos_theta = cos(theta_i);
+			float sin_theta = sin(theta_i);				
+			
+			a11 += cos_theta * cos_theta * sin_theta * sin_theta;
+			a12 += cos_theta * sin_theta * sin_theta * sin_theta;
+			a22 += sin_theta * sin_theta * sin_theta * sin_theta;
+			a13 += (kn_ti - a * cos_theta * cos_theta) * cos_theta * sin_theta;
+			a23 += (kn_ti - a * cos_theta * cos_theta) * sin_theta * sin_theta;
+		}
+		a21 = a12;
+		
+		b = (a13 * a22 - a23 * a12) / (a11 * a22 - a12 * a12);
+		c = (a11 * a23 - a12 * a13) / (a11 * a22 - a12 * a12);
+
+		if (isnan(b)) b = 0;
+		if (isnan(c)) c = 0;
+		
+		if (neighs.size()==0)
+		{
+			a=0; b=0; c=0;
+		}
+	
+		gaussian_curv= a*c - SQUARED(b)/4;
+		mean_curv  = (a+c)/2;
+		
+/*		max_kn = std::min(10.0f,max_kn);
+		min_kn = std::max(-10.0f,min_kn);		
+
+		mean_curv  = (max_kn+min_kn)/2;
+		gaussian_curv  = max_kn*min_kn;
+*/
 	} else if (curv_comp_method==Curv_Approx) { //Approx
 		
 		float edge_avg = computeVertexStatistics(v,2);
@@ -1779,6 +2540,10 @@ void Mesh::computeVertexCurvature( Vertex& v) {
 		mean_curv = sumEuclid/sumGeo; 
 		mean_curv = (mean_curv > 1) ? 1 : mean_curv;
 	}
+	
+	if (isnan(gaussian_curv)) gaussian_curv = 0;
+	if (isnan(mean_curv)) mean_curv = 0;			
+	
 	v.mean_curvature()=mean_curv;
 	v.gaussian_curvature()=gaussian_curv;
 } // compute curvatures
@@ -1803,11 +2568,11 @@ void Mesh::computeVertexLaplacian ( Vertex& v )
 		do
 		{
 			++order;
-			/*			if (vi->is_border_edge()) {
+			if (vi->is_border_edge()) {
 			 v.laplacian()=Vector(0,0,0);
 			 return;
 			 }
-			 */			
+					
 			result_laplacian = result_laplacian + ( vi->prev()->vertex()->point() - CGAL::ORIGIN );
 		}
 	while ( ++vi != v.vertex_begin() );
@@ -2127,6 +2892,25 @@ Vertex::Vertex_handle Mesh::closestVertex ( Kernel::Point_3 &the_point )
 }
 
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+Vertex* Mesh::getVertexById ( int id )
+{
+	if (id_mapping.size()==0)
+		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ ) {
+			id_mapping.push_back(&(*vi));
+		}
+	if (id > id_mapping.size()-1) 
+		return NULL;
+	else
+		return id_mapping[id];
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+float Mesh::getSurfacePercentageRadius(float x)
+{
+	// returns the radius of a circle covering x percentage from the total surface area
+	return sqrt((x/100)*area_avg*p.size_of_facets()/PI/4);	
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 float Mesh::distanceTo(Mesh &other, bool reinit_search_structures) {
@@ -2633,7 +3417,19 @@ void Mesh::improveVertexValence ( int valence_mode )
 	
 }
 
-// for triangle edges ABC: collapse: A/B swap: A/(B+C)
+
+/*
+ Description: 
+	It iterates through all the mesh vertices and it tries to fix degenerate triangles.
+	There are conditions that check for large and small angles.
+ Parameters:
+	- degenerateAngleDeg 
+			- for large angles: if an angle is bigger than degenerateAngleDeg.
+			- a good values to use is typically 170
+	- collapseRatio 
+			- for small angles: given the corresponding edges (a,b,c) in all permutations, if (a/b < collapseRatio) & (a/c < collapseRatio)
+			- a good value to use is 0.1 
+ */
 int Mesh::fixDegeneracy ( double collapseRatio,double degenerateAngleDeg )
 {
 	int no_ops=0;
@@ -2793,7 +3589,20 @@ void Mesh::fixAllDegeneracy ( double collapseRatio,double degenerateAngleDeg )
 	updateMeshData();
 }
 
-// mode : 0 - no invokeFixes; 1 - invokeFixes; 10 - MeshVerif - no smothing
+/**
+ Description: 
+ - The goal of this method is to ensure that all the edges of the mesh are within the interval [epsilonMin,epsilonMax].
+   In order to do so, edge collapses and edge split operations are performed.
+ - The method also attempts to fix degeneracies by invoking fixDegeneracy(collapseRatio,degenerate_angle_deg) and performs some local smoothing, based on the operating mode.
+ Parameters:
+ - [epsilonMin, epsilonMax] - the desired edge interval
+ - collapseRatio, degenerate_angle_deg - parameters used to invoke fixDegeneracy (see function for more details)
+ - mode : 0 - fixDegeneracy=No  smoothing=Yes;
+		  1 - fixDegeneracy=Yes smoothing=Yes; (default)
+		 10 - fixDegeneracy=Yes smoothing=No;
+ - max_iter (default=30) - maximum number of iterations to be performed; since there is no guarantee that one operations (such as a collapse, for example)
+   will not in turn generate new degeneracies, operations are being performed on the mesh in an iterative fashion. 
+ */
 void Mesh::ensureEdgeSizes ( double epsilonMin, double epsilonMax, double collapseRatio,double degenerate_angle_deg, int mode, int max_iters )
 {
 	int no_ops=1;
@@ -2969,1462 +3778,9 @@ void Mesh::ensureEdgeSizes()
 	ensureEdgeSizes ( 0, edge_max/4, 0.2, 150 );//edge_avg
 }
 
-void Mesh::testStuff ( float someParam )
-{
-	computeMeshStats();
-	float desiredMaxEdge = someParam;
-	//	cout << "edge_max= " << edge_max << " desired max edge= " << desiredMaxEdge << endl;
-	//	ensureEdgeSizes(0, edge_max/2, true);//edge_avg
-	//	ensureEdgeSizes(0, desiredMaxEdge);//edge_avg
-	return;
-	
-	KernelExact::Point_3 p1 ( 1,0,0 );
-	KernelExact::Point_3 p2 ( 0,1,0 );
-	KernelExact::Point_3 p3 ( 0,0,1 );
-	
-	KernelExact::Point_3 p4 ( 0.1,0.2,0.3 );
-	KernelExact::Point_3 p5 ( 1,0,1 );
-	KernelExact::Point_3 p6 ( 0,1,1 );
-	
-	KernelExact::Triangle_3 a ( p1,p2,p3 ), b ( p4,p5,p6 );
-	//	Triangle_3
-	
-	KernelExact::Point_3 s1_1 ( 0.625,0, 0.375 );
-	KernelExact::Point_3 s1_2 ( 0, 0.625, 0.375 );
-	KernelExact::Point_3 s2_1 ( 0.5,0.125, 0.375 );
-	KernelExact::Point_3 s2_2 ( 0.125,0.5, 0.375 );
-	
-	cout << "collinear : " << CGAL::collinear ( s1_1,s1_2,s2_1 ) << endl;
-	
-	/*	CGAL::Object obj = CEP::intersection::intersection(a,b);
-	 cout << "t1: " << a << " t2: " << b << endl;
-	 if (const KernelExact::Triangle_3 * t = CGAL::object_cast<KernelExact::Triangle_3>(&obj)) {
-	 cout << "intersection is a triangle: " << *t << endl;
-	 }	
-	 else
-	 if (const KernelExact::Segment_3 * t =  CGAL::object_cast<KernelExact::Segment_3>(&obj)) {
-	 cout << "intersection is a segment: " << *t << endl;
-	 }
-	 else
-	 if (CGAL::object_cast<KernelExact::Point_3>(&obj)) {
-	 cout << "intersection is a point: " << endl;
-	 }
-	 else {
-	 cout << "no intersection" << endl;
-	 }
-	 cout << "---------------------------------------------------" << endl;
-	 //	cout << "interesect:" << doTrianglesIntersect(a,b) << endl;
-	 //	cout << "interesection:" << intersectTriangles(a,b) << endl;
-	 
-	 cout << "----FIX MESH-----------------------------------------------" << endl;
-	 */
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-bool Mesh::doFacetsIntersect ( const Box *b, const Box *c, bool computeSegments )
-{
-	Halfedge_handle h = b->handle()->halfedge();
-	// check for shared egde --> no intersection
-	if ( h->opposite()->facet() == c->handle()
-		|| h->next()->opposite()->facet() == c->handle()
-		|| h->next()->next()->opposite()->facet() == c->handle() )
-		return false;
-	// check for shared vertex --> maybe intersection, maybe not
-	Halfedge_handle g = c->handle()->halfedge();
-	Halfedge_handle v;
-	if ( h->vertex() == g->vertex() )
-		v = g;
-	if ( h->vertex() == g->next()->vertex() )
-		v = g->next();
-	if ( h->vertex() == g->next()->next()->vertex() )
-		v = g->next()->next();
-	if ( v == Halfedge_handle() )
-	{
-		h = h->next();
-		if ( h->vertex() == g->vertex() )
-			v = g;
-		if ( h->vertex() == g->next()->vertex() )
-			v = g->next();
-		if ( h->vertex() == g->next()->next()->vertex() )
-			v = g->next()->next();
-		if ( v == Halfedge_handle() )
-		{
-			h = h->next();
-			if ( h->vertex() == g->vertex() )
-				v = g;
-			if ( h->vertex() == g->next()->vertex() )
-				v = g->next();
-			if ( h->vertex() == g->next()->next()->vertex() )
-				v = g->next()->next();
-		}
-	}
-	if ( v != Halfedge_handle() )
-	{
-		// found shared vertex:
-		CGAL_assertion ( h->vertex() == v->vertex() );
-		// geomtric check if the opposite segments intersect the triangles
-		Triangle_3 t1 ( h->vertex()->point(),
-					   h->next()->vertex()->point(),
-					   h->next()->next()->vertex()->point() );
-		Triangle_3 t2 ( v->vertex()->point(),
-					   v->next()->vertex()->point(),
-					   v->next()->next()->vertex()->point() );
-		Segment_3  s1 ( h->next()->vertex()->point(),
-					   h->next()->next()->vertex()->point() );
-		Segment_3  s2 ( v->next()->vertex()->point(),
-					   v->next()->next()->vertex()->point() );
-		if ( CGAL::do_intersect ( t1, s2 ) )
-		{
-			//cerr << "Triangles intersect (t1,s2):\n    T1: " << t1
-			//     << "\n    T2 :" << t2 << endl;
-			if ( !computeSegments ) return true;
-			inter_segments.push_back ( intersectTrianglesExact ( t1, t2 ) );
-			if ( inter_segments.back()->squared_length() ==0 )
-			{
-				delete inter_segments.back();
-				inter_segments.pop_back();
-				return false;
-			}
-			else
-			{
-				h->facet()->addIntersection ( v->facet(), inter_segments.back() );
-				v->facet()->addIntersection ( h->facet(), inter_segments.back() );
-				return true;
-			}
-		}
-		else if ( CGAL::do_intersect ( t2, s1 ) )
-		{
-			//cerr << "Triangles intersect (t2,s1):\n    T1: " << t1
-			//     << "\n    T2 :" << t2 << endl;
-			if ( !computeSegments ) return true;
-			inter_segments.push_back ( intersectTrianglesExact ( t1, t2 ) );
-			if ( inter_segments.back()->squared_length() ==0 )
-			{
-				delete inter_segments.back();
-				inter_segments.pop_back();
-				return false;
-			}
-			else
-			{
-				h->facet()->addIntersection ( v->facet(), inter_segments.back() );
-				v->facet()->addIntersection ( h->facet(), inter_segments.back() );
-				return true;
-			}
-		}
-		return false;
-	}
-	// check for geometric intersection
-	Triangle_3 t1 ( h->vertex()->point(),
-				   h->next()->vertex()->point(),
-				   h->next()->next()->vertex()->point() );
-	Triangle_3 t2 ( g->vertex()->point(),
-				   g->next()->vertex()->point(),
-				   g->next()->next()->vertex()->point() );
-	if ( CGAL::do_intersect ( t1, t2 ) )
-	{
-		//cerr << "Triangles intersect:\n    T1: " << t1 << "\n    T2 :"
-		//     << t2 << endl;
-		if ( !computeSegments ) return true;
-		inter_segments.push_back ( intersectTrianglesExact ( t1, t2 ) );
-		if ( inter_segments.back()->squared_length() ==0 )
-		{
-			delete inter_segments.back();
-			inter_segments.pop_back();
-			return false;
-		}
-		else
-		{
-			h->facet()->addIntersection ( g->facet(), inter_segments.back() );
-			g->facet()->addIntersection ( h->facet(), inter_segments.back() );
-			
-			return true;
-		}
-	}
-	return false;
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-struct Intersect_facets_wrapper
-{
-	void operator() ( const Box* b, const Box* c ) const
-	{
-		if ( m->doFacetsIntersect ( b,c,computeSegments ) && ( !computeSegments ) )
-		{
-			b->handle()->setIntersectionStatus ( true );
-			c->handle()->setIntersectionStatus ( true );
-		}
-	}
-public:
-	Mesh * m;
-	bool computeSegments;
-	Intersect_facets_wrapper ( Mesh* tmpM, bool tmpComputeSegments ) {m = tmpM; computeSegments=tmpComputeSegments;}
-};
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-int Mesh::checkIntersections ( bool computeSegments )
-{
-	CGAL::Timer time_intersection;
-	time_intersection.start();
-	
-	for ( std::vector<KernelExact::Segment_3*>::iterator j = inter_segments.begin(); j != inter_segments.end(); ++j )
-		delete *j;
-	inter_segments.clear();
-
-	
-	for ( Facet_iterator f = p.facets_begin(); f != p.facets_end(); ++f )
-		f->clearIntersections();
-#if DEBUG_SELF_INTERSECTIONS==1
-	cout << "CHECKING INTERSECTIONS" << endl;
-#endif
-	std::vector<Box> boxes;
-	boxes.reserve ( p.size_of_facets() );
-	for ( Facet_iterator i = p.facets_begin(); i != p.facets_end(); ++i )
-	{
-		boxes.push_back (
-						 Box ( i->halfedge()->vertex()->point().bbox()
-							  + i->halfedge()->next()->vertex()->point().bbox()
-							  + i->halfedge()->next()->next()->vertex()->point().bbox(),
-							  i ) );
-	}
-	std::vector<const Box*> box_ptr;
-	box_ptr.reserve ( p.size_of_facets() );
-	for ( std::vector<Box>::iterator j = boxes.begin(); j != boxes.end(); ++j )
-	{
-		box_ptr.push_back ( &*j );
-	}
-	CGAL::box_self_intersection_d ( box_ptr.begin(), box_ptr.end(), Intersect_facets_wrapper ( this,computeSegments ) , std::ptrdiff_t ( 2000 ) );
-	
-	//iterate all the triangles
-#if DEBUG_SELF_INTERSECTIONS==1
-	if ( computeSegments ) cout << "COMPUTING CONSTRAINED TRIANGULATIONS" << endl;
-#endif
-	int intersections = 0;
-	for ( Facet_iterator f = p.facets_begin(); f != p.facets_end(); ++f )
-		if ( f->hasIntersections() )
-		{
-#if DEBUG_SELF_INTERSECTIONS==1
-			f->set_color ( 0,0,1 );
-#endif
-			if ( computeSegments ) {
-				if (f->cdt) delete f->cdt;
-				f->cdt =  getTriangulation ( f );
-			}
-			/*		cout << " seg. " << std::distance(p.facets_begin(),f) << " has " << f->inter_facets.size() << " facet intersections; ";
-			 cout << " sub_edges=" << std::distance(f->cdt->finite_edges_begin(),f->cdt->finite_edges_end()) ;
-			 cout << " sub_triang=" << std::distance(f->cdt->finite_faces_begin(),f->cdt->finite_faces_end()) ;
-			 cout << endl;
-			 */		intersections++;
-			
-		}
-		else
-		{
-#if DEBUG_SELF_INTERSECTIONS==1
-			f->set_color ( 1,1,1 );
-#endif
-		}
-	
-#if DEBUG_MESH>1
-	
-	cout << " - taken : " << time_intersection.time() << " seconds" << endl;
-#endif
-	
-	
-	/*   for ( std::vector<Halfedge_handle>::iterator j = facet_intersections.begin(); j != facet_intersections.end(); ++j){
-	 (*j)->facet()->set_color(0,0,1);
-	 }
-	 */
-#if DEBUG_MESH>0	
-	cout << "FOUND " << intersections << " INTERSECTIONS" << endl;
-#endif
-	return intersections;
-}
-
-KernelExact::Segment_3* Mesh::intersectTrianglesExact ( Triangle_3 a, Triangle_3 b )
-{
-	
-	return intersectTriangles ( a,b );
-	
-	
-	KernelExact::Point_3 p1[3],p2[3];
-	for ( int i=0;i<3;i++ )
-	{
-		p1[i] = KernelExact::Point_3 ( a[i][0],a[i][1],a[i][2] );
-		p2[i] = KernelExact::Point_3 ( b[i][0],b[i][1],b[i][2] );
-	}
-	KernelExact::Triangle_3 t1 ( p1[0],p1[1],p1[2] ), t2 ( p2[0],p2[1],p2[2] );
-	
-	
-	CGAL::Object result = CEP::intersection::intersection ( t1,t2 );
-	if ( result.is_empty() )
-	{
-#if DEBUG_SELF_INTERSECTIONS==1
-		cout << "OBject is empty" << endl;
-#endif
-		return new KernelExact::Segment_3 ( KernelExact::Point_3 ( 0.0f,0.0f,0.0f ),KernelExact::Point_3 ( 0.0f,0.0f,0.0f ) );
-	}
-	if ( const KernelExact::Segment_3 *segment = CGAL::object_cast<KernelExact::Segment_3> ( &result ) )
-	{
-		return new KernelExact::Segment_3 ( *segment );
-	}
-	else
-		if ( const KernelExact::Point_3 *segment = CGAL::object_cast<KernelExact::Point_3> ( &result ) )
-		{
-#if DEBUG_SELF_INTERSECTIONS==1
-			cout << "Intersection is a POINT!!!!" <<  endl;
-#endif
-			return new KernelExact::Segment_3 ( KernelExact::Point_3 ( 0.0f,0.0f,0.0f ),KernelExact::Point_3 ( 0.0f,0.0f,0.0f ) );
-		}
-		else
-		{
-#if DEBUG_SELF_INTERSECTIONS==1
-			cout << "Does not know what the intersection object is!!!!" <<  endl;
-#endif
-			return new KernelExact::Segment_3 ( KernelExact::Point_3 ( 0,0,0 ),KernelExact::Point_3 ( 0,0,0 ) );
-		}
-}
-
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-KernelExact::Segment_3* Mesh::intersectTriangles ( Triangle_3 a, Triangle_3 b )
-{
-	//  return Segment_3(Point(0,0,0),Point(0,0,0));
-#if TRIANGLE_INTERSECTION_METHOD==1
-	KernelExact::Point_3 p1[3],p2[3];
-	for ( int i=0;i<3;i++ )
-	{
-		p1[i] = KernelExact::Point_3 ( a[i][0],a[i][1],a[i][2] );
-		p2[i] = KernelExact::Point_3 ( b[i][0],b[i][1],b[i][2] );
-	}
-	KernelExact::Triangle_3 t1 ( p1[0],p1[1],p1[2] ), t2 ( p2[0],p2[1],p2[2] );
-	
-	
-	CGAL::Object result = CEP::intersection::intersection ( t1,t2 );
-#if DEBUG_SELF_INTERSECTIONS==1
-	if ( result.is_empty() ) cout << "OBject is empty" << endl;
-#endif
-	if ( const KernelExact::Segment_3 *segment = CGAL::object_cast<KernelExact::Segment_3> ( &result ) )
-	{
-		return new KernelExact::Segment_3 ( *segment );
-	}
-	else
-	{
-#if DEBUG_SELF_INTERSECTIONS==1
-		cout << "COPLANAR triangles in interesection!!!!" <<  endl;
-#endif
-		return new KernelExact::Segment_3 ( KernelExact::Point_3 ( 0,0,0 ),KernelExact::Point_3 ( 0,0,0 ) );
-	}
-	
-#elif TRIANGLE_INTERSECTION_METHOD==2
-	
-	int coplanar;
-	float u[9], v[9], s[6];
-	for ( int i=0;i<3;i++ )
-		for ( int j=0;j<3;j++ )
-		{
-			u[3*i+j] = ( float ) a[i][j];
-			v[3*i+j] = ( float ) b[i][j];
-		}
-	MeshHelper::tri_tri_intersect_with_isectline ( u,u+3,u+6,v,v+3,v+6,&coplanar,s,s+3 );
-	
-	if ( coplanar==1 )
-	{
-#if DEBUG_SELF_INTERSECTIONS==1
-		cout << "COPLANAR ";
-#endif
-		return new KernelExact::Segment_3 ( KernelExact::Point_3 ( 0,0,0 ),KernelExact::Point_3 ( 0,0,0 ) );
-	}
-	else
-		return new KernelExact::Segment_3 ( KernelExact::Point_3 ( s[0],s[1],s[2] ),KernelExact::Point_3 ( s[3],s[4],s[5] ) );
-#else
-	int coplanar;
-	float u[9], v[9], s[6];
-	for ( int i=0;i<3;i++ )
-		for ( int j=0;j<3;j++ )
-		{
-			u[3*i+j] = ( float ) a[i][j];
-			v[3*i+j] = ( float ) b[i][j];
-		}
-	MeshHelper::tri_tri_intersect_with_isectline ( u,u+3,u+6,v,v+3,v+6,&coplanar,s,s+3 );
-	if ( coplanar==1 )
-	{ // the slow one
-		
-		KernelExact::Point_3 p1[3],p2[3];
-		for ( int i=0;i<3;i++ )
-		{
-			p1[i] = KernelExact::Point_3 ( a[i][0],a[i][1],a[i][2] );
-			p2[i] = KernelExact::Point_3 ( b[i][0],b[i][1],b[i][2] );
-		}
-		KernelExact::Triangle_3 t1 ( p1[0],p1[1],p1[2] ), t2 ( p2[0],p2[1],p2[2] );
-		
-		CGAL::Object result = CEP::intersection::intersection ( t1,t2 );
-#if DEBUG_SELF_INTERSECTIONS==1
-		if ( result.is_empty() ) cout << "OBject is empty" << endl;
-#endif
-		if ( const KernelExact::Segment_3 *segment = CGAL::object_cast<KernelExact::Segment_3> ( &result ) )
-		{
-			return new KernelExact::Segment_3 ( *segment );
-		}
-		else
-		{
-#if DEBUG_SELF_INTERSECTIONS==1
-			cout << "COPLANAR triangles in interesection!!!!" <<  endl;
-#endif
-			return new KernelExact::Segment_3 ( KernelExact::Point_3 ( 0,0,0 ),KernelExact::Point_3 ( 0,0,0 ) );
-		}
-		
-	}
-	else
-		return new KernelExact::Segment_3 ( KernelExact::Point_3 ( s[0],s[1],s[2] ),KernelExact::Point_3 ( s[3],s[4],s[5] ) );
-	
-#endif
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-vector<Facet*> Mesh::getNeighbours ( Facet *f )
-{
-	vector<Facet*> result;
-	result.push_back ( f );
-	//	cout << "Triangle " << f->triangle() << endl;
-	
-	HF_circulator hc = f->facet_begin();
-	do
-	{
-		HV_circulator hv = hc->vertex()->vertex_begin();
-		do
-		{
-			if ( find ( result.begin(),result.end(),& ( *hv->facet() ) ) ==result.end() )
-			{
-				result.push_back ( & ( *hv->facet() ) );
-				//				cout << "- neigh " << hv->facet()->triangle() << endl;
-				//				hv->facet()->set_color(0.0,1.0,0.0);
-			}
-		}
-		while ( ++hv != hc->vertex()->vertex_begin() );
-	}
-	while ( ++hc != f->facet_begin() );
-	
-	//	f->set_color(1,0,0);
-	return result;
-}
 
 
 
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-// assumes that all the intersections are added in inter_facets
-CDT* Mesh::getTriangulation ( Vertex::Facet_handle f )
-{
-	
-	//Facet_handle f = h->facet();
-	CDT* cdt = new CDT();
-	
-	KernelExact::Plane_3 plane_eq ( TO_POINT3_EXACT ( f->triangle() [0] ),TO_POINT3_EXACT ( f->triangle() [1] ),TO_POINT3_EXACT ( f->triangle() [2] ) );
-	//	KernelExact::Plane_3 plane_eq= f->triangle().supporting_plane();
-	
-	HF_circulator h = f->facet_begin();
-	CDT::Point t_p1 = plane_eq.to_2d ( TO_POINT3_EXACT ( h->vertex()->point() ) );
-	CDT::Point t_p2 = plane_eq.to_2d ( TO_POINT3_EXACT ( h->next()->vertex()->point() ) );
-	CDT::Point t_p3 = plane_eq.to_2d ( TO_POINT3_EXACT ( h->next()->next()->vertex()->point() ) );
-	
-	CDT::Vertex_handle v1 = cdt->insert ( t_p1 );
-	CDT::Vertex_handle v2 = cdt->insert ( t_p2 );
-	CDT::Vertex_handle v3 = cdt->insert ( t_p3 );
-	// convention to say that these vertices are the original edges of the triangle
-	v1->facet_id_type=TRIANGLE_EDGES; v1->facet_id=0; v1->point_3d = TO_POINT3_EXACT ( h->vertex()->point() );
-	v2->facet_id_type=TRIANGLE_EDGES; v2->facet_id=1; v2->point_3d = TO_POINT3_EXACT ( h->next()->vertex()->point() );
-	v3->facet_id_type=TRIANGLE_EDGES; v3->facet_id=2; v3->point_3d = TO_POINT3_EXACT ( h->next()->next()->vertex()->point() );
-	cdt->insert_constraint ( v1,v2 );
-	cdt->insert_constraint ( v2,v3 );
-	cdt->insert_constraint ( v3,v1 );
-	
-	
-	for ( std::vector<KernelExact::Segment_3 *>::iterator j = f->inter_segments.begin(); j != f->inter_segments.end(); ++j )
-	{
-		KernelExact::Segment_3& tmpSeg = **j;
-		
-		CDT::Point p1 = plane_eq.to_2d ( tmpSeg.target() );
-		CDT::Point p2 = plane_eq.to_2d ( tmpSeg.source() );
-		
-		CDT::Vertex_handle v1 = cdt->insert ( p1 );
-		CDT::Vertex_handle v2 = cdt->insert ( p2 );
-		
-		// convention to say that these vertices are parts of input constraints
-		v1->facet_id_type=CONSTRAINT_VERTEX;
-		v2->facet_id_type=CONSTRAINT_VERTEX;
-		int j_dist= std::distance ( f->inter_segments.begin(),j );
-		v1->facet_id = j_dist; v1->point_3d = tmpSeg.target();
-		v2->facet_id = j_dist; v2->point_3d = tmpSeg.source();
-		cdt->insert_constraint ( v1,v2 );
-	}
-	
-	
-	//	if (!cdt->is_valid())
-	
-	int count=0;
-	for ( CDT::Finite_edges_iterator eit = cdt->finite_edges_begin(); eit != cdt->finite_edges_end(); ++eit )
-	{
-		if ( cdt->is_constrained ( *eit ) ) ++count;
-		
-		CDT::Edge pp = *eit;
-		CDT::Face_handle f = pp.first;
-		int fedge = pp.second;
-		
-		// if the vertices are sub-contraints... we need to set the point_3d
-		if ( f->vertex ( cdt->cw ( fedge ) )->facet_id_type==SUBCONSTRAINT_VERTEX )
-			f->vertex ( cdt->cw ( fedge ) )->point_3d = plane_eq.to_3d ( f->vertex ( cdt->cw ( fedge ) )->point() );
-		
-		if ( f->vertex ( cdt->ccw ( fedge ) )->facet_id_type==SUBCONSTRAINT_VERTEX )
-			f->vertex ( cdt->ccw ( fedge ) )->point_3d = plane_eq.to_3d ( f->vertex ( cdt->ccw ( fedge ) )->point() );
-		
-//		triang_segments.push_back ( Segment_3 ( FROM_POINT3_EXACT ( f->vertex ( cdt->cw ( fedge ) )->point_3d ),FROM_POINT3_EXACT ( f->vertex ( cdt->ccw ( fedge ) )->point_3d ) ) );
-		
-	}
-	
-	for ( CDT::Finite_faces_iterator eif = cdt->finite_faces_begin(); eif != cdt->finite_faces_end(); ++eif )
-		eif->info() = false; // mark all subtriangles as not visited - used in self-intersection removal
-	
-	
-	//	std::cout << "The number of resulting constrained edges is  ";
-	//	std::cout <<  count << std::endl;
-	
-	return cdt;
-}
-
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-// A modifier creating a triangle with the incremental builder.
-template <class HDS, class K>
-class Build_New_Mesh : public CGAL::Modifier_base<HDS>
-{
-private:
-	vector<typename K::Triangle_3> new_triangles;
-	vector<Facet_handle> new_triangles_orig_facet;
-	
-	vector<Vertex_handle> vertex_orig_vertex_map;
-	std::map <typename K::Point_3, int> vertex_map;
-	
-	
-	//additional structures required in order to be able to perform vertex splits
-	vector< vector<int> > vertex_triangle_map; // vertex triangle iterator
-	vector<typename K::Point_3> vertices;
-	vector<bool>	vertices_new_flag;
-	vector<bool>	triangle_status;
-	vector< vector<int> > triangle_vertex_map; //triangle vertex iterator
-	
-	bool error;
-	bool copy_original_facet_data;
-	
-	// assumes that the additional data structures have been initialized
-	bool _findTriangleWithinVertex ( int vertex_id, int & triangle_id, int & other_vertex_id_1, int & other_vertex_id_2 )
-	{
-		triangle_id=-1;
-		for ( int t=0;t<vertex_triangle_map[vertex_id].size();t++ )
-			if ( triangle_status[vertex_triangle_map[vertex_id][t]] == false ) {
-				triangle_id = vertex_triangle_map[vertex_id][t];
-				triangle_status[triangle_id] = true;
-				for ( int i=0;i<3;i++ )
-					if ( triangle_vertex_map[triangle_id][i]==vertex_id ) {
-						other_vertex_id_1 = triangle_vertex_map[triangle_id][ ( i+1 ) %3];
-						other_vertex_id_2 = triangle_vertex_map[triangle_id][ ( i+2 ) %3];						
-						return true;
-					}
-			}
-		if ( triangle_id!=-1 )
-		{
-			cout << "_findTriangleWithinVertex failed !" << endl;
-		}
-		return false;
-		
-	}
-	bool _triangleContainsVertex ( int triangle_id, int vertex_id )
-	{
-		for ( int v=0;v<3;v++ )
-			if ( triangle_vertex_map[triangle_id][v] == vertex_id ) return true;
-		return false;
-	}
-	
-	bool _chooseNextTriangle ( int vertex_id, int triangle_id, int other_vertex_id,  int & new_triangle_id, int & new_other_vertex_id )
-	{
-		new_triangle_id=-1;
-		for ( int t=0;t<vertex_triangle_map[other_vertex_id].size();t++ )
-			if ( ( triangle_status[vertex_triangle_map[other_vertex_id][t]] == false ) && _triangleContainsVertex ( vertex_triangle_map[other_vertex_id][t],vertex_id ) )
-			{
-				new_triangle_id = vertex_triangle_map[other_vertex_id][t];
-				triangle_status[new_triangle_id] = true;
-				for ( int i=0;i<3;i++ )
-					if ( ( triangle_vertex_map[new_triangle_id][i] !=vertex_id ) && ( triangle_vertex_map[new_triangle_id][i] != other_vertex_id ) )
-					{
-						new_other_vertex_id = triangle_vertex_map[new_triangle_id][i];
-						return true;
-					}
-			}
-		if ( new_triangle_id!=-1 )
-		{
-			cout << "_chooseNextTriangle failed !" << endl;
-		}
-		return false;
-	}
-	
-public:
-	////////////////////////////////////////////////////////////////////////////////////
-	Build_New_Mesh()
-	{
-		error = false;
-		copy_original_facet_data = true;
-	}
-	
-	////////////////////////////////////////////////////////////////////////////////////
-	void addTriangle ( typename K::Triangle_3 tmpT )
-	{
-		new_triangles.push_back ( tmpT );
-		copy_original_facet_data = false;
-	}
-	
-	////////////////////////////////////////////////////////////////////////////////////
-	void addTriangle ( typename K::Triangle_3 tmpT, Triangle_Job &job )
-	{
-		
-		if ( job.updated_norm_factor == 1 )
-		{
-			new_triangles.push_back ( tmpT );
-			
-			for ( int i=0;i<3;i++ )
-			{
-				if ( vertex_map.find ( tmpT[i] ) ==vertex_map.end() )
-				{
-					//							vertex_map[tmpT[i]] = vertex_id++;
-					//							vertex_orig_vertex_map[tmpT[i]] = job.facet->
-				}
-			}
-			
-		}
-		else
-		{
-			//		cout << "Added inverted element" << endl;
-			//new_triangles.push_back(tmpT);
-			new_triangles.push_back ( typename K::Triangle_3 ( tmpT[2],tmpT[1],tmpT[0] ) );
-			//		cout << "Added triangle " << new_triangles.size()-1 << " with normal_factor=" << job.updated_norm_factor << endl;
-			//		new_triangles.push_back(Triangle_3(tmpT[2],tmpT[1],tmpT[0]));
-			
-		}
-		new_triangles_orig_facet.push_back ( job.facet );
-		
-		//	cout << "Now " << new_triangles.size() << " ==> " << tmpT << endl;
-		
-	}
-	
-	void operator() ( HDS& hds )
-	{
-#if DEBUG_MESH>0		
-		cout << "STITCHING TOGETHER THE NEW MESH "; flush ( cout );
-#endif		
-#if MESH_BUILDER_WITH_HASHING==1
-		
-		vector<int> tmpVector;
-		
-		
-		// build the map with all the vertices
-		int vertex_id=0;
-		
-		for ( typename vector<typename K::Triangle_3>::iterator it=new_triangles.begin(); it!=new_triangles.end();it++ )
-		{
-			for ( int i=0;i<3;i++ )
-			{
-				if ( vertex_map.find ( it->vertex ( i ) ) ==vertex_map.end() )
-				{
-					vertex_map[it->vertex ( i ) ] = vertex_id++;
-				}
-			}
-		}
-		
-		// Need to create additional data structures in order to
-		//   process each vertex and split the doberman ears like structures,
-		//   where a vertex connects two separated components.
-		
-		triangle_status.reserve ( new_triangles.size() );
-		triangle_vertex_map.reserve ( new_triangles.size() );
-		vertex_triangle_map.reserve ( vertex_map.size() );
-		vertices.reserve ( vertex_id );
-		vertices_new_flag.reserve ( vertex_id );
-		
-		//create structures
-		for ( typename vector<typename K::Triangle_3>::iterator it=new_triangles.begin(); it!=new_triangles.end();it++ ) {
-			triangle_vertex_map.push_back ( tmpVector );
-		}
-		
-		for ( typename std::map <typename K::Point_3, int>::iterator v_it=vertex_map.begin();v_it!=vertex_map.end();v_it++ )
-		{
-			vertices.push_back ( new_triangles[0].vertex ( 0 ) );
-			vertices_new_flag.push_back ( false );
-			vertex_triangle_map.push_back ( tmpVector );
-		}
-		
-		//populate structures
-		for ( typename std::map <typename K::Point_3, int>::iterator v_it=vertex_map.begin();v_it!=vertex_map.end();v_it++ )
-		{
-			vertices[v_it->second] = v_it->first;
-		}
-		for ( int t=0;t < new_triangles.size(); t++ )
-		{
-			triangle_status.push_back ( false );
-			for ( int i=0;i<3;i++ )
-			{
-				triangle_vertex_map[t].push_back ( vertex_map[new_triangles[t].vertex ( i ) ] );
-				vertex_triangle_map[vertex_map[new_triangles[t].vertex ( i ) ]].push_back ( t );
-			}
-		}
-		int old_vertices_size = vertices.size();
-		int singular_vertex=0;
-		for ( int v=0;v<old_vertices_size;v++ ) {
-			// set all triangles as false
-			for ( int t=0;t<vertex_triangle_map[v].size();t++ )
-				triangle_status[vertex_triangle_map[v][t]] = false;
-			int triangle_count = vertex_triangle_map[v].size();
-			
-			int cur_triangle_id, next_triangle_id, next_triangle_id_orig;
-			int cur_other_vertex_id, next_other_vertex_id, next_other_vertex_id_1,next_other_vertex_id_2;
-			bool first_time=true;
-			queue<int> trianglesForNewVertex;
-			int new_v=-1;
-			while ( _findTriangleWithinVertex ( v,next_triangle_id_orig,next_other_vertex_id_1,next_other_vertex_id_2 ) )
-			{
-				if ( !first_time )
-				{
-					singular_vertex++;
-					vertices.push_back ( vertices[v] );
-					vertices_new_flag[v] = true;
-					vertices_new_flag.push_back ( true ); // it is a new vertex - move it a bit
-					new_v = vertices.size()-1;
-					vertex_triangle_map.push_back ( tmpVector );
-				}
-				//			cout << "seeder vertex: " << v;
-				
-				//it makes sense to traverse in both directions for open surfaces!
-				// 1st direction
-				next_other_vertex_id = next_other_vertex_id_1;
-				next_triangle_id = next_triangle_id_orig;
-				do {
-					cur_triangle_id = next_triangle_id;
-					cur_other_vertex_id = next_other_vertex_id;
-					if ( new_v!=-1 ) {
-						trianglesForNewVertex.push ( cur_triangle_id );
-					}
-				} while ( _chooseNextTriangle ( v,cur_triangle_id,cur_other_vertex_id,next_triangle_id,next_other_vertex_id ) );
-				// 2nd direction
-				next_other_vertex_id = next_other_vertex_id_2;
-				next_triangle_id = next_triangle_id_orig;
-				do {
-					cur_triangle_id = next_triangle_id;
-					cur_other_vertex_id = next_other_vertex_id;
-					if ( new_v!=-1 ) {
-						trianglesForNewVertex.push ( cur_triangle_id );
-					}
-				} while ( _chooseNextTriangle ( v,cur_triangle_id,cur_other_vertex_id,next_triangle_id,next_other_vertex_id ) );
-				
-				
-				// we need to move all the triangles to its new papa vertex
-				while ( !trianglesForNewVertex.empty() )
-				{
-					cur_triangle_id = trianglesForNewVertex.front(); trianglesForNewVertex.pop();
-					vertex_triangle_map[new_v].push_back ( cur_triangle_id );
-					
-					vector<int> &localVector = vertex_triangle_map[v];
-					
-					localVector.erase ( remove_if ( localVector.begin(), localVector.end(), bind2nd ( equal_to<int>(), cur_triangle_id ) ), localVector.end() );
-					
-					for ( int ii=0;ii<3;ii++ )
-						if ( triangle_vertex_map[cur_triangle_id][ii]==v )
-							triangle_vertex_map[cur_triangle_id][ii] = new_v;
-				}
-				first_time = false;
-			}
-		}
-#if DEBUG_MESH>0				
-		cout << "(found " << singular_vertex << " singular vertices)." << endl;
-#endif		
-		// Postcondition: `hds' is a valid polyhedral surface.
-		CGAL::Polyhedron_incremental_builder_3<HDS> B ( hds, true );
-		B.begin_surface ( vertex_map.size(), new_triangles.size(), 6 );
-		
-		
-		for ( int i=0;i<vertices.size();i++ )
-		{
-			Vertex_handle v = B.add_vertex ( FROM_POINT3_EXACT ( vertices[i] ) );
-			if ( vertices_new_flag[i] ) v->flag[0]=true;
-		}
-		typedef typename HDS::Vertex   Vertex;
-		typedef typename Vertex::Point Point;
-		for ( int t=0;t<triangle_vertex_map.size();t++ )
-		{
-			B.begin_facet();
-			// copy information from parent mesh
-			for ( int i=0;i<3;i++ )
-				B.add_vertex_to_facet ( triangle_vertex_map[t][i] );
-			Halfedge_handle h = B.end_facet();
-			
-			
-			if ( copy_original_facet_data )
-			{
-#if MVSTEREO_FACETS==1
-				h->facet()->weight_priors = new_triangles_orig_facet[t]->weight_priors;
-				h->facet()->weight = new_triangles_orig_facet[t]->weight;
-#endif				
-				Halfedge_handle orig_h = new_triangles_orig_facet[t]->facet_begin();
-				h->facet()->removal_status=new_triangles_orig_facet[t]->removal_status;
-				for ( int i=0;i<3;i++ ) {
-					if (vertices[triangle_vertex_map[t][i]]==TO_POINT3_EXACT(new_triangles_orig_facet[t]->get_point(i))) {
-						( h->vertex() )->transferData(*(orig_h->vertex()));
-					}
-					else {
-						h->vertex()->weight = 0.5;
-						//							cout << vertices[triangle_vertex_map[t][i]] << "!=" << new_triangles_orig_facet[t]->get_point(i) <<endl;
-					}
-					h = h->next();
-					orig_h = orig_h->next();
-				}
-					
-			}
-		}
-		
-		if ( B.check_unconnected_vertices() )
-		{
-			cout << "There are unconnected vertices!" << endl;
-			B.remove_unconnected_vertices();
-		}
-		
-		if ( B.error() )
-		{
-			cout << "Error encountered while building the surface with hashin. Undoing operation. Rebuilding without hashing." << endl;
-			B.rollback();
-			B.begin_surface ( new_triangles.size() *3, new_triangles.size(), 6 );
-			for ( typename vector<typename K::Triangle_3>::iterator it=new_triangles.begin(); it!=new_triangles.end();it++ )
-			{
-				
-				B.add_vertex ( FROM_POINT3_EXACT ( it->vertex ( 0 ) ) );
-				B.add_vertex ( FROM_POINT3_EXACT ( it->vertex ( 1 ) ) );
-				B.add_vertex ( FROM_POINT3_EXACT ( it->vertex ( 2 ) ) );
-				B.begin_facet();
-				B.add_vertex_to_facet ( hds.size_of_vertices()-3 );
-				B.add_vertex_to_facet ( hds.size_of_vertices()-2 );
-				B.add_vertex_to_facet ( hds.size_of_vertices()-1 );
-				B.end_facet();
-			}
-			B.end_surface();
-		}
-		else
-			B.end_surface();
-	}
-#else
-	cout << "Mesh Builder WITHOUT Hashing invoked" << endl;
-	// Postcondition: `hds' is a valid polyhedral surface.
-	CGAL::Polyhedron_incremental_builder_3<HDS> B ( hds, true );
-	B.begin_surface ( new_triangles.size() *3, new_triangles.size() );
-	
-	typedef typename HDS::Vertex   Vertex;
-	typedef typename Vertex::Point Point;
-	for ( vector<Triangle_3>::iterator it=new_triangles.begin(); it!=new_triangles.end();it++ )
-	{
-		
-		B.add_vertex ( it->vertex ( 0 ) );
-		B.add_vertex ( it->vertex ( 1 ) );
-		B.add_vertex ( it->vertex ( 2 ) );
-		B.begin_facet();
-		B.add_vertex_to_facet ( hds.size_of_vertices()-3 );
-		B.add_vertex_to_facet ( hds.size_of_vertices()-2 );
-		B.add_vertex_to_facet ( hds.size_of_vertices()-1 );
-		B.end_facet();
-	}
-	B.end_surface();
-	}
-#endif
-	}; //Build_New_Mesh
-	
-	
-	
-	
-	//////////////////////////////////////////////////////////////////////////////////////////////////////
-	// helper  function for self intersection
-	// --------------------------------------
-	Facet_handle Mesh::_getSeedTriangle() {
-
-// see the SEED_METHOD legent @ the top		
-#if SEED_METHOD==4
-		
-		typedef Kernel::Point_3 Point;
-		typedef Kernel::Plane_3 Plane;
-		typedef Kernel::Vector_3 Vector;
-		typedef Kernel::Segment_3 Segment;
-		typedef CGAL::AABB_polyhedron_triangle_primitive<Kernel,Polyhedron> AABB_Primitive;
-		typedef CGAL::AABB_traits<Kernel, AABB_Primitive> AABB_Traits;
-		typedef CGAL::AABB_tree<AABB_Traits> AABB_Tree;
-		typedef AABB_Tree::Object_and_primitive_id Object_and_primitive_id;
-		typedef AABB_Tree::Primitive_id Primitive_id;	
-		
-//		AABB_Tree tree(p.facets_begin(),p.facets_end());
-		
-		if (_AABB_tree==NULL) //allocate the tree first time
-			_AABB_tree = new AABB_Tree(p.facets_begin(),p.facets_end());		
-#endif		
-		
-		
-		//TODO: should also check that it's on the visual hull
-		for ( Facet_iterator f=p.facets_begin();f!=p.facets_end(); ++f )
-			if ( ( !f->hasIntersections() ) && ( f->removal_status=='U' ) ) {
-				
-#if SEED_METHOD==1			
-				Plane_3 the_plane ( f->facet_begin()->vertex()->point() +f->normal() *edge_avg/2,f->normal() );
-				//			Kernel::Line_3 line_1(vi->point(), vi->point() + vi->normal());
-				
-				bool visual_hull_triangle = true;
-				for ( Vertex_iterator v=p.vertices_begin();v!=p.vertices_end(); ++v )
-					if ( the_plane.has_on_positive_side ( v->point() ) )
-					{
-						visual_hull_triangle = false;
-						break;
-					}
-				if ( visual_hull_triangle )
-					return f;
-#elif SEED_METHOD==2
-				Kernel::Point_3 pp,p1,p2;
-				Kernel::Vector_3 n;
-				pp=(f->center());
-				n=(f->normal());
-				
-				p1=pp;
-				p2=pp + n*edge_avg*100;
-				Kernel::Ray_3 ray(p1,p2);
-				bool seed_triangle = true;
-				for ( Facet_iterator ff=p.facets_begin();ff!=p.facets_end(); ++ff ) {
-					if (do_intersect(ff->triangle(),ray)) {
-						if (ff->center()==pp) continue;
-						seed_triangle=false;
-						//cout << "tr:" << f << " intersects" << ff << endl;
-						break;
-					}
-				}
-				if (seed_triangle)
-					return f;
-#elif SEED_METHOD==3
-				Kernel::Point_3 pp,p1,p2;
-				Kernel::Vector_3 n;
-				pp=(f->center());
-				n=(f->normal());
-				
-				p1=pp; //+ n*edge_avg*0.01;
-				p2=pp + n*edge_avg*100;
-				Kernel::Ray_3 ray(p1,p2);
-				int inter_1=0;
-				int inter_2=0; // to counter-act for the source triangle
-				bool seed_triangle = true;
-				Vector ray_normal = v_normalized(p2-p1);
-				for ( Facet_iterator ff=p.facets_begin();ff!=p.facets_end(); ++ff ) {
-					if ((f!=ff) && do_intersect(ff->triangle(),ray)) {
-						float sign_dot_prod= ff->normal()*ray_normal;
-						if (sign_dot_prod > 0) 
-							inter_1++;
-						else
-							inter_2++;
-					}
-				}
-				if (inter_1==inter_2)
-					return f;
-#elif SEED_METHOD==4
-				
-				Kernel::Point_3 pp,p1,p2;
-				Kernel::Vector_3 n;
-				pp=(f->center());
-				n=(f->normal());
-				
-				p1=pp; //+ n*edge_avg*0.01;
-				p2=pp + n*edge_avg*1000000;
-				Kernel::Ray_3 ray_query(p1,p2);
-				//Kernel::Segment_3 segment_query(p1,p2);
-				int inter_1=0;
-				int inter_2=0; // to counter-act for the source triangle
-				bool seed_triangle = true;
-				Vector ray_normal = v_normalized(p2-p1);
-				
-				
-				std::list<Object_and_primitive_id> intersections;
-				((AABB_Tree*)_AABB_tree)->all_intersections(ray_query, std::back_inserter(intersections));
-				//boost::optional<Object_and_primitive_id> intersection = tree.any_intersection(segment_query);
-				
-				for(std::list<Object_and_primitive_id>::iterator i=intersections.begin(); i!=intersections.end();i++) {
-					Object_and_primitive_id op = *i;
-					CGAL::Object object = op.first;
-					
-					Point point;
-					if (CGAL::assign(point,object)) { //if intersection is a point
-						Facet_handle other_face = op.second;
-						if (f!=other_face) {
-							float sign_dot_prod= other_face->normal()*ray_normal;
-							if (sign_dot_prod > 0) 
-								inter_1++;
-							else
-								inter_2++;
-						}
-					}
-					
-				}
-				
-				if (inter_1==inter_2)
-					return f;
-				
-#endif		
-			}
-		
-		return NULL;
-		
-	}
-	
-	
-	//////////////////////////////////////////////////////////////////////////////////////////////////////
-	// helper  function for self intersection
-	// --------------------------------------
-	// We need to iterate the Constrainted Delaunay triangulation and find
-	// the triangle which contains the entrance edge removal_entrance_segment.
-	// We need to use the removal_updated_norm which at this time represents the norm of
-	// the entrance triangle.
-	
-	
-	bool Mesh::_findStartupCDTriangle ( Triangle_Job &job )
-	{
-		Facet_handle f = job.facet;
-		CDT::Face_handle startup_triangle=NULL;
-		bool found_sol=false;
-		
-		// some preparations in order to choose the triangle on the good side of the edge
-		//	if (job.updated_norm_factor==-1) job.entrance_segment = job.entrance_segment.opposite();
-		KernelExact::Point_3 p_ref = job.entrance_segment.target();
-		
-		KernelExact::Point_3 p_prev_opposite = job.entrance_opposite_point;
-		KernelExact::Point_3 p_prev_with_norm = p_ref + job.entrance_norm;
-		KernelExact::Line_3 l_prev ( p_ref,p_prev_with_norm );
-		KernelExact::Plane_3 pl_prev = l_prev.perpendicular_plane ( p_ref );
-		CGAL::Oriented_side good_side_prev = pl_prev.oriented_side ( p_prev_with_norm );
-		
-		
-		//	cout << "no of edges is: " << std::distance(f->cdt->finite_edges_begin(),f->cdt->finite_edges_end()) << endl;
-		for ( CDT::Finite_edges_iterator eit = f->cdt->finite_edges_begin(); eit != f->cdt->finite_edges_end(); ++eit )
-		{
-			if ( f->cdt->is_constrained ( *eit ) )
-			{
-				CDT::Edge pp = *eit;
-				CDT::Face_handle faces[2];
-				faces[0] = pp.first; // the current face
-				int tmp_v_id = pp.second; // the opposite vertex
-				
-				KernelExact::Point_3 pt1 = faces[0]->vertex ( f->cdt->ccw ( tmp_v_id ) )->point_3d;
-				KernelExact::Point_3 pt2 = faces[0]->vertex ( f->cdt->cw ( tmp_v_id ) )->point_3d;
-				KernelExact::Point_3 pt3 = faces[0]->vertex ( tmp_v_id )->point_3d; // opposite side
-				KernelExact::Segment_3 seg ( pt1,pt2 );
-				
-				// if it is just one segment (just entering a partially valid from a valid triangle)
-				if ( ( seg == job.entrance_segment ) || ( seg.opposite() == job.entrance_segment ) )
-				{
-					
-					faces[1] = faces[0]->neighbor ( tmp_v_id );
-#if DEBUG_SELF_INTERSECTIONS>1
-					cout << "- found segment;";
-#endif
-					if ( f->cdt->is_infinite ( faces[0] ) )
-					{
-#if DEBUG_SELF_INTERSECTIONS>1
-						cout << " boundary segment;";
-#endif
-						startup_triangle = faces[1];
-					}
-					else
-						if ( f->cdt->is_infinite ( faces[1] ) )
-						{
-#if DEBUG_SELF_INTERSECTIONS>1
-							cout << " boundary segment;";
-#endif
-							startup_triangle = faces[0];
-						}
-						else
-						{ // it's a segment in the middle.. choose the good one using the normal
-#if DEBUG_SELF_INTERSECTIONS>1
-							cout << " choosing correct side;";
-#endif
-							KernelExact::Point_3 p_with_norm = p_ref + TO_VECTOR3_EXACT ( f->normal() );
-							KernelExact::Line_3 l ( p_ref,p_with_norm );
-							KernelExact::Plane_3 pl = l.perpendicular_plane ( p_ref );
-							CGAL::Oriented_side good_side = pl.oriented_side ( p_with_norm );
-							
-							job.updated_norm_factor = 1;
-							if ( pl_prev.oriented_side ( pt3 ) ==good_side_prev )
-								startup_triangle = faces[0];
-							else
-							{
-								
-								startup_triangle = faces[1];
-							}
-#if SELF_INTER_REMOVAL_POSITIVE_NORMALS_ONLY==1
-							if ( pl.oriented_side ( p_prev_opposite ) !=good_side )
-							{ //this means we need to negate the prev. choice
-								if ( pl_prev.oriented_side ( pt3 ) ==good_side_prev )
-									startup_triangle = faces[1];
-								else
-								{
-									
-									startup_triangle = faces[0];
-								}
-							}
-#endif
-							
-						}
-#if DEBUG_SELF_INTERSECTIONS>1
-					cout << endl;
-#endif
-					found_sol = true;
-					break;
-				}
-			}
-		}
-		
-		if ( !found_sol )
-		{
-			cout << "ERROR: _findStartupCDTriangle failed for:" << endl;
-			cout << "    - triangle : "<< f->triangle() << endl;
-			cout << "    - segment : "<< job.entrance_segment << endl;
-		}
-		job.start_subfacet=startup_triangle;
-		return found_sol;
-	}
-	
-	//////////////////////////////////////////////////////////////////////////////////////////////////////
-	// helper  function for self intersection
-	// --------------------------------------
-	void Mesh::_updateNormal ( Triangle_Job & job )
-	{
-		// TODO: take into account f->removal_entrance_norm;
-		job.updated_norm = TO_VECTOR3_EXACT ( job.facet->normal() ) *job.updated_norm_factor; //TO_VECTOR3_EXACT(
-		
-	}
-	
-	//////////////////////////////////////////////////////////////////////////////////////////////////////
-	void Mesh::removeSelfIntersections()
-	{
-#if DEBUG_MESH>0			
-		cout << "REMOVING SELF INTERSECTIONS" << endl;
-#endif	
-		queue<Triangle_Job> S_queue;
-		queue<Triangle_Job> P_queue;
-		
-		Polyhedron p_new;
-		Build_New_Mesh<HalfedgeDS,KernelExact> builder;
-		
-		bool had_partial_triangles;
-		
-		// this should mark all the intersections + compute all the delaunay triangulations for the intersections + mark all substriangles as unvisited
-		no_intersections = checkIntersections ( true );
-		if ( no_intersections==0 )
-		{
-#if DEBUG_MESH>0
-			cout << "NO SELF INTERSECTIONS FOUND." << endl;
-#endif		
-			return;
-		}
-#if DEBUG_MESH>0			
-		cout << "FINDING EXTERNAL TRIANGLES" << endl;
-#endif	
-		// mark all triangles as unvisited
-		for ( Facet_iterator f=p.facets_begin(); f!=p.facets_end(); ++f )
-			f->removal_status = 'U';
-
-		
-#if SEED_METHOD==4
-		if (_AABB_tree!=NULL) { //if allocated, erase the tree
-			delete _AABB_tree;
-			_AABB_tree=NULL;
-		}
-#endif
-		// add original seed triangle
-		Facet_handle seeder = _getSeedTriangle();
-		if ( seeder==NULL )
-		{
-#if DEBUG_MESH>0		
-			cout << "No seed triangle could be found" << endl;
-#endif		
-			return;
-		}
-		
-		seeder->removal_status='S';
-		Triangle_Job job ( seeder );
-		job.entrance_norm = TO_VECTOR3_EXACT ( seeder->normal() );
-		S_queue.push ( job );
-		
-		do
-		{
-			while ( !S_queue.empty() )
-			{ // process valid triangles
-				Triangle_Job currentJob = S_queue.front(); S_queue.pop();
-				Facet_handle f =  currentJob.facet;
-				_updateNormal ( currentJob );
-				builder.addTriangle ( f->triangleExact(),currentJob );
-				//			Halfedge_handle f_h1 = f->facet_begin();
-				//			Halfedge_handle f_h2 = f_h1->next();
-				//			Halfedge_handle f_h3 = f_h2->next();
-				
-				
-				//			builder.addTriangle ( KernelExact::Triangle_3 ( TO_POINT3_EXACT ( f_h1->vertex()->point() ), TO_POINT3_EXACT ( f_h2->vertex()->point() ), TO_POINT3_EXACT ( f_h3->vertex()->point() ) ));
-				
-				
-				HF_circulator h_edge = f->facet_begin();
-				do {
-					if (h_edge->is_border_edge()) continue;
-					Facet_handle f_neigh= h_edge->opposite()->facet();
-					if ( f_neigh!=Facet_handle() && f_neigh->removal_status!='V'  && f_neigh->removal_status!='S') {
-						Triangle_Job new_job ( f_neigh );
-						new_job.entrance_norm = currentJob.updated_norm;
-						new_job.updated_norm_factor = currentJob.updated_norm_factor;
-						new_job.entrance_segment = KernelExact::Segment_3 ( TO_POINT3_EXACT ( h_edge->vertex()->point() ),TO_POINT3_EXACT ( h_edge->prev()->vertex()->point() ) );
-						new_job.entrance_opposite_point = TO_POINT3_EXACT ( h_edge->next()->vertex()->point() );
-						
-						if ( !f_neigh->hasIntersections() )
-						{
-							f_neigh->removal_status='V';
-							S_queue.push ( f_neigh );
-						}
-						else
-						{
-							f_neigh->removal_status='P';
-							if ( !_findStartupCDTriangle ( new_job ) )
-							{
-								cout << "RemoveSelfIntersection: Error while trying to find the the good startup subtriangle." << endl;
-								return;
-							}
-							
-							if ( new_job.start_subfacet->info() == false )
-							{
-								new_job.start_subfacet->info() = true;
-								P_queue.push ( new_job );
-							}
-						}
-					}
-					
-				} while ( ++h_edge != f->facet_begin() );
-				
-			}
-			
-			had_partial_triangles = false;
-			while ( !P_queue.empty() ) { // process partially valid triangle
-				had_partial_triangles = true;
-				
-				Triangle_Job currentJob = P_queue.front(); P_queue.pop();
-				Facet_handle f =  currentJob.facet;
-				// update possible duplicates
-				_updateNormal ( currentJob );
-				
-				queue<CDT::Face_handle> CDT_queue;
-				CDT_queue.push ( currentJob.start_subfacet );
-				
-				while ( !CDT_queue.empty() )
-				{
-					CDT::Face_handle CDT_f = CDT_queue.front(); CDT_queue.pop();
-					builder.addTriangle ( KernelExact::Triangle_3 ( CDT_f->vertex ( 0 )->point_3d,CDT_f->vertex ( 1 )->point_3d,CDT_f->vertex ( 2 )->point_3d ),currentJob );
-					
-					for ( int i=0;i<3;i++ )
-					{
-						CDT::Edge CDT_e;
-						CDT_e.first = CDT_f;
-						CDT_e.second = i;
-						
-						if ( f->cdt->is_constrained ( CDT_e ) )
-						{ // gotto see which original constraint belongs to
-							KernelExact::Plane_3 plane_eq ( TO_POINT3_EXACT ( f->triangle() [0] ),TO_POINT3_EXACT ( f->triangle() [1] ),TO_POINT3_EXACT ( f->triangle() [2] ) );
-							//KernelExact::Plane_3 plane_eq= f->triangle().supporting_plane();
-							
-
-							CDT::Vertex_handle CDT_v1,CDT_v2;
-							CDT_v1 = CDT_f->vertex ( f->cdt->cw ( i ) );
-							CDT_v2 = CDT_f->vertex ( f->cdt->ccw ( i ) );
-							
-							KernelExact::Segment_3 CDT_seg ( CDT_v1->point_3d,CDT_v2->point_3d );
-							KernelExact::Segment_2 CDT_seg_2 (CDT_v1->point(),CDT_v2->point());
-							KernelExact::Point_3 CDT_opposite = CDT_f->vertex ( i )->point_3d;
-							Facet_handle neigh_facet;
-							
-							
-							int CDT_pos=0;
-							// try to see if it is on a CONSTRAINED_VERTEX
-							for ( std::vector<KernelExact::Segment_3 *>::iterator j = f->inter_segments.begin(); j != f->inter_segments.end(); ++j )
-							{
-								KernelExact::Segment_3& tmpSeg = **j;
-								KernelExact::Segment_2 tmpSeg_2 = KernelExact::Segment_2(plane_eq.to_2d(tmpSeg.source()),plane_eq.to_2d(tmpSeg.target()));
-
-//								if ( tmpSeg.has_on ( CDT_v1->point_3d ) && tmpSeg.has_on ( CDT_v2->point_3d ) )
-								if ( tmpSeg_2.has_on (CDT_v1->point()) && tmpSeg_2.has_on (CDT_v2->point()) )
-								{
-									neigh_facet = f->inter_facets[CDT_pos]->halfedge()->facet();
-									break;
-								}
-								CDT_pos++;
-							}
-							
-							if ( neigh_facet==NULL )
-							{ //if not, it's gotto be a Triangle EDGE
-								HF_circulator hf =f->facet_begin();
-								do
-								{
-									KernelExact::Segment_3 tmpSeg ( TO_POINT3_EXACT ( hf->vertex()->point() ),TO_POINT3_EXACT ( hf->prev()->vertex()->point() ) );
-									KernelExact::Segment_2 tmpSeg_2 ( plane_eq.to_2d(TO_POINT3_EXACT( hf->vertex()->point())),plane_eq.to_2d(TO_POINT3_EXACT( hf->prev()->vertex()->point())) );
-									if ( tmpSeg_2.has_on (CDT_v1->point()) && tmpSeg_2.has_on(CDT_v2->point()) )
-//									if ( tmpSeg.has_on ( CDT_v1->point_3d ) && tmpSeg.has_on ( CDT_v2->point_3d ) )
-									{
-										neigh_facet = hf->opposite()->facet();
-										break;
-									}
-								}
-								while ( ++hf != f->facet_begin() );
-							}
-							
-							if ( neigh_facet==NULL ) {
-								cout << "RemoveSelfIntersection: Subconstraint not found within all original constraints + triangle edges." << endl;
-								std::map<KernelExact::Point_2,int> local_mapping;
-								int local_counter=0;
-								int tmp_i1,tmp_i2;
-								#define SET_INDEX(X,Y) if(local_mapping.find(X)==local_mapping.end()) {local_mapping[X]=++local_counter;Y=local_counter;} else {Y=local_mapping[X];}
-								#define LOCAL_PROJECTION(X) plane_eq.to_2d(X)
-								#define PRINT_SEGMENT(X,Y) SET_INDEX(X,tmp_i1); SET_INDEX(Y,tmp_i2); cout << X << " (" << (char)('A'+tmp_i1-1) << ") ==> " <<  Y << " (" << (char)('A'+tmp_i2-1) << ")" << endl;
-								cout << "Facet id="<<std::distance(p.facets_begin(),f) + 1<< endl;
-								cout << "Intersection Segments:" << endl;
-								for ( std::vector<KernelExact::Segment_3 *>::iterator j = f->inter_segments.begin(); j != f->inter_segments.end(); ++j ) {
-									PRINT_SEGMENT(LOCAL_PROJECTION((*j)->source()),LOCAL_PROJECTION((*j)->target()))
-								}
-								cout << "Triangle:" << endl;
-								HF_circulator hf =f->facet_begin();
-								do {
-									PRINT_SEGMENT(LOCAL_PROJECTION(TO_POINT3_EXACT(hf->vertex()->point())),LOCAL_PROJECTION(TO_POINT3_EXACT(hf->prev()->vertex()->point())))
-								}
-								while ( ++hf != f->facet_begin() );
-								cout << "Delaunay Triangulation:" << endl;
-								for ( CDT::Finite_edges_iterator eit = f->cdt->finite_edges_begin(); eit != f->cdt->finite_edges_end(); ++eit )
-								{
-									CDT::Edge pp = *eit;
-									CDT::Face_handle ff = pp.first;
-									int fedge = pp.second;
-									
-									KernelExact::Point_3 p1 = ff->vertex ( f->cdt->cw ( fedge ) )->point_3d;
-									KernelExact::Point_3 p2 = ff->vertex ( f->cdt->ccw ( fedge ) )->point_3d;
-				
-									if ( f->cdt->is_constrained ( *eit ) ) 
-										cout << " (*) ";
-									else 
-										cout << " (-) ";
-									PRINT_SEGMENT(LOCAL_PROJECTION(p1), LOCAL_PROJECTION(p2))
-								}
-								cout << "Problematic constraint: ";
-								PRINT_SEGMENT(LOCAL_PROJECTION(CDT_v1->point_3d),LOCAL_PROJECTION(CDT_v2->point_3d))
-
-								saveFormat("error_mesh.off");
-								return;
-							}
-							
-							//time to add neigh_facet
-							Triangle_Job new_job ( neigh_facet );
-							new_job.entrance_segment = CDT_seg;
-							new_job.entrance_opposite_point = CDT_opposite;
-							new_job.updated_norm_factor = currentJob.updated_norm_factor;
-							new_job.entrance_norm = currentJob.updated_norm;
-							
-							if ( neigh_facet->removal_status!='V' &&  neigh_facet->removal_status!='S') {
-								
-								if ( neigh_facet->hasIntersections()==false ) {
-									neigh_facet->removal_status='V';
-									S_queue.push ( new_job );
-								}
-								else {
-									neigh_facet->removal_status='P';
-									if ( !_findStartupCDTriangle ( new_job ) )
-									{
-										cout << "RemoveSelfIntersection: Error while trying to find the the good startup subtriangle." << endl;
-										saveFormat("error_mesh.off");
-										return;
-									}
-									
-									if (new_job.start_subfacet->info() ==false)
-									{
-										new_job.start_subfacet->info() = true;
-										P_queue.push ( new_job );
-									}
-								}
-								
-							}
-							
-						} //if is contrainted
-						else
-						{ // not constrainted - safe to process the neighbor
-							if ( CDT_f->neighbor ( i )->info() ==false )
-							{
-								CDT_f->neighbor ( i )->info() = true;
-								CDT_queue.push ( CDT_f->neighbor ( i ) );
-							}
-						}
-						
-					}
-				}
-			}
-			if ( ! ( ( !S_queue.empty() ) || ( !P_queue.empty() ) || had_partial_triangles ) )
-			{
-				Facet_handle seeder = _getSeedTriangle();
-				if ( seeder!=NULL )
-				{
-					seeder->removal_status='V';
-					Triangle_Job job ( seeder );
-					job.entrance_norm = TO_VECTOR3_EXACT ( seeder->normal() );
-					S_queue.push ( job );
-				}
-			}
-			
-		}
-		while ( ( !S_queue.empty() ) || ( !P_queue.empty() ) || had_partial_triangles );
-		
-		p_new.delegate ( builder );
-		if ( !p_new.is_valid ( false ) )
-		{
-			cout << "new mesh is not valid. abandoning." << endl;
-			saveFormat("error_mesh.off");
-		}
-		else
-		{
-			lock();
-			p = p_new;
-			inter_segments.clear();
-			unlock();
-		}
-		
-		updateMeshData();
-		
-		// smooth a bit the singular vertices!!
-		lock();
-		for ( Vertex_iterator vi = p.vertices_begin(); vi!=p.vertices_end(); vi++ )
-			if ( vi->flag[0] )
-				vi->point() = vi->point() + vi->laplacian() *0.25;// - vi->laplacian_deriv()*0.4;
-		unlock();
-		updateMeshData();
-		
-		//	smooth(0.02,4);
-		
-	}
-	
-	////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	void Mesh::mergeTriangleSoup() {
-		
-		Build_New_Mesh<HalfedgeDS,KernelExact> builder;
-		for(Facet_iterator f=p.facets_begin(); f !=p.facets_end(); f++)
-			builder.addTriangle(f->triangleExact());
-		
-		lock();
-		Polyhedron p_new;
-		p_new.delegate ( builder );
-		p = p_new;
-		unlock();
-		updateMeshData();
-		
-	}
-	
 	
 	////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	void Mesh::createMeshFromPoints ( const char *filename )
@@ -4682,7 +4038,23 @@ public:
 	}
 	
 	//////////////////////////////////////////////////////////////////////////////////////////////////////
-	void Mesh::rotate(Affine_3 &rot, bool meshCentered) {
+	void Mesh::rotate(float angle_x_deg, float angle_y_deg, float angle_z_deg, bool meshCentered) {
+		Affine_3 rx,ry,rz,r;
+		double ax= angle_x_deg/180*PI;
+		double ay= angle_y_deg/180*PI;
+		double az= angle_z_deg/180*PI;
+		
+		rx = Affine_3(1,0,0,  0,cos(ax),sin(ax), 0,-sin(ax),cos(ax));
+		ry = Affine_3(cos(ay),0,-sin(ay),0,1,0, sin(ay),0,cos(ay));
+		rz = Affine_3(cos(az), sin(az),0,-sin(az),cos(az),0,0,0,1);
+		
+		r = rx*ry*rz;
+		
+		affine(r,meshCentered);		
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////////////////////////
+	void Mesh::affine(Affine_3 &rot, bool meshCentered) {
 		float mx,my,mz;
 		if (meshCentered) {
 			float *bounds = getBoundingBox();
@@ -4764,6 +4136,9 @@ public:
 	}
 }; //Mesh_Joiner
 
+
+
+
 	//////////////////////////////////////////////////////////////////////////////////////////////////////
 	void Mesh::unionWith(Mesh &other) {
 
@@ -4777,56 +4152,5 @@ public:
 	
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////
 	
-	//////////////////////////////////////////////////////////////////////////////////////////////////////
-	bool Mesh::loadAsTriangleSoup(const char *filename) {
-		ifstream is ( filename );
-		//is.open(filename);
-		is.width (4);
-		char mesh_type[4];
-		is>> mesh_type;
-		
-		Build_New_Mesh<HalfedgeDS,KernelExact> builder;
-		
-		if ( (strcmp(mesh_type,"OFF")==0) || (strcmp(mesh_type,"off")==0) ) {
-			cout << "Importing OFF file as a triangle soup." << endl;
-			is.width(1000);
-			float tmpValue;
-			int no_vertices,no_facets, no_junk;	
-			is >> no_vertices; is >> no_facets; is >> no_junk;
-			
-			vector<KernelExact::Point_3> points;
-			float coord[3];
-			for ( int i=0;i<no_vertices;i++ ) {
-				is >> coord[0]; is >> coord[1]; is >> coord[2];
-				points.push_back(KernelExact::Point_3(coord[0],coord[1],coord[2]));
-				
-			}
-			for ( int j=0;j<no_facets;j++ ) {
-				int no_edges;
-				int t_e[3];
-				is >> no_edges;
-				if (no_edges!=3) {
-					cout << "only triangular meshes supported at this time." << endl;
-					return false;
-				}
-				for(int t=0;t<no_edges;t++) 
-					is >> t_e[t];
-				builder.addTriangle(KernelExact::Triangle_3(points[t_e[0]],points[t_e[1]],points[t_e[2]]));
-			}
-			
-			/*		for(Facet_iterator f=p.facets_begin(); f !=p.facets_end(); f++)
-			 builder.addTriangle(f->triangleExact());
-			 */	
-			lock();
-			Polyhedron p_new;
-			p_new.delegate ( builder );
-			p = p_new;
-			unlock();
-			updateMeshData();
-			return true;
-		}
-		else {
-			cout << "Format '" << mesh_type << "' not supported. We support only OFF files at this time." << endl;
-			return false;
-		}
-	}
+
+

@@ -18,7 +18,8 @@
 #include "BoundingBoxProps.h"
 #include "PointSet.h"
 #include "MeshError.h"
-#include "FeatureGradientHistogram.h"
+#include "MeshNoiser.h"
+//#include "FeatureGradientHistogram.h"
 
 #include <QFileDialog>
 #include <QInputDialog>
@@ -29,7 +30,7 @@
 #include <unistd.h>
 
 #if QT_VERSION >= 0x040000
-#include "ui_MVWindow.Qt4.h"
+#include "ui_MVWindow.h"
 
 
 class MVWindow : public QMainWindow, public Ui::MVWindow
@@ -80,7 +81,7 @@ public:
 		
 		connect(actionSmooth, SIGNAL(triggered()), this, SLOT(on_pushSmooth_pressed()));				
 		
-		connect(actionSIFT_Features, SIGNAL(triggered()), this, SLOT(actionSIFT_Features_triggered()));		
+		//connect(actionSIFT_Features, SIGNAL(triggered()), this, SLOT(actionSIFT_Features_triggered()));		
 		
 		connect(gseg, SIGNAL(stepFinished()), this, SLOT(updateUI()));
 
@@ -342,14 +343,14 @@ private slots:
 	
 
 	void actionSIFT_Features_triggered() {
-		Vertex_iterator vi = viewer->data->mesh.p.vertices_begin();
+/*		Vertex_iterator vi = viewer->data->mesh.p.vertices_begin();
 		for(int i=0;i<141;i++) vi++;
 		int no_rings=5;
 		int no_bins_centroid=36;
 		int no_bins_groups=3;
 		int no_bins_orientations=8;
 		double spatial_influence=0.5;
-		FeatureGradientHistogram feature(0,no_rings, no_bins_centroid, no_bins_groups, no_bins_orientations, spatial_influence);
+		FeatureGradientHistogram feature(no_rings, viewer->data->mesh.edge_avg, no_bins_centroid, no_bins_groups, no_bins_orientations, spatial_influence);
 		Vertex v = *vi;
 		vector<float> descriptor;
 
@@ -358,7 +359,7 @@ private slots:
 		for(int i=0;i<descriptor.size();i++) 
 			cout << descriptor[i] << " ";
 		cout << endl;
-
+*/
 		
 	}
 
@@ -483,8 +484,8 @@ private slots:
 
 	void on_pushPerturb_pressed() {
 		cout << "Noising mesh with sigma="<<getScalingFactor() << endl;
-		viewer->data->mesh.noise(getScalingFactor(),'C',0);
-		viewer->data->mesh.noise(getScalingFactor(),'G',0);		
+		MeshNoiser::noiseColour(viewer->data->mesh,getScalingFactor(),0);
+		MeshNoiser::noiseGeom(viewer->data->mesh,getScalingFactor(),0);		
 		//perturb was here before
 		viewer->updateGL();
 	}

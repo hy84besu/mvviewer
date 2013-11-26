@@ -499,7 +499,8 @@ void MVViewer::keyPressEvent(QKeyEvent *e) {
 		else if (quality_mode == Mesh::Qual_Mean_Curv) { setQualityMode(Mesh::Qual_Mean_Curv_Deriv); }
 		else if (quality_mode == Mesh::Qual_Mean_Curv_Deriv) { setQualityMode(Mesh::Qual_Gaussian_Curv); }
 		else if (quality_mode == Mesh::Qual_Gaussian_Curv) { setQualityMode(Mesh::Qual_Gaussian_Curv_Deriv); }
-		else if (quality_mode == Mesh::Qual_Gaussian_Curv_Deriv) { setQualityMode(Mesh::Qual_Color); }
+		else if (quality_mode == Mesh::Qual_Gaussian_Curv_Deriv) { setQualityMode(Mesh::Qual_Imported); }
+		else if (quality_mode == Mesh::Qual_Imported) { setQualityMode(Mesh::Qual_Color); }		
 	}	
 
 	
@@ -634,7 +635,7 @@ void MVViewer::setSmoothShading(bool state) {
 
 void MVViewer::setQualityMode(Mesh::QualityComputationMethod q_mode) {
 	quality_mode = q_mode;
-	data->mesh.setVertexQuality(quality_mode);
+	data->mesh.setMeshQuality(quality_mode);
 	setGeometryMode('Q');
 }
 
@@ -651,6 +652,8 @@ void MVViewer::setGeometryMode(char mode) {
 		else if (quality_mode == Mesh::Qual_Mean_Curv_Deriv) { cout << "Mean Curv Deriv";}		
 		else if (quality_mode == Mesh::Qual_Gaussian_Curv) { cout << "Gaussian Curv";}		
 		else if (quality_mode == Mesh::Qual_Gaussian_Curv_Deriv) { cout << "Gaussian Curv Deriv";}		
+		else if (quality_mode == Mesh::Qual_Imported) { cout << "Imported Quality";}				
+		
 	}
 	else if (geometry_mode == 'q') { cout << "Quality Derivative";}
 	else if (geometry_mode == 'W') { cout << "Weights";}

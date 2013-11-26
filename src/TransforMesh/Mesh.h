@@ -50,6 +50,7 @@ typedef CGAL::Polyhedron_3<Kernel, MeshItems>          Polyhedron;
 typedef Polyhedron::HalfedgeDS                         HalfedgeDS;
 typedef Polyhedron::Vertex                             Vertex;
 typedef Polyhedron::Facet                              Facet;
+typedef Polyhedron::Halfedge                           Halfedge;
 typedef Polyhedron::Vertex_iterator                    Vertex_iterator;
 typedef Polyhedron::Facet_iterator                     Facet_iterator;
 typedef Polyhedron::Facet_const_iterator               Facet_const_iterator;
@@ -130,9 +131,10 @@ public:
 class Mesh {
 public:
 	enum CurvatureComputationMethod {Curv_Meyer=1,Curv_Dong=2,Curv_Approx=3,Geo_Euclid_Ratio=4};
-	enum QualityComputationMethod {Qual_No_Computation=0, Qual_Color=1, Qual_Color_Deriv=2, Qual_Mean_Curv=3, Qual_Mean_Curv_Deriv=4, Qual_Gaussian_Curv=5, Qual_Gaussian_Curv_Deriv=6};
+	enum QualityComputationMethod {Qual_No_Computation=0, Qual_Color=1, Qual_Color_Deriv=2, Qual_Mean_Curv=3, Qual_Mean_Curv_Deriv=4, Qual_Gaussian_Curv=5, Qual_Gaussian_Curv_Deriv=6, Qual_Quality_Deriv=7, Qual_Imported=8};
 	enum MeshRemeshingMethod {Remesh_Sqrt3=1,Remesh_Loop=2,Remesh_CatmullClark=3,Remesh_DooSabin=4};	
 	enum NoiseMode {Colour=0,Geometry=1};
+	enum MeshReturnCodes {MeshFileNotFound, MeshNonManifold, MeshOK};	
 	
 	Mesh();
 	Mesh(const Mesh& mesh_copy);
@@ -143,7 +145,8 @@ public:
 	float* getBoundingBox();
 
 
-	bool loadFormat(const char *filename,bool rememberFilename);
+	
+	MeshReturnCodes loadFormat(const char *filename,bool rememberFilename);
 	bool loadAsTriangleSoup(const char *filename);
 	bool saveFormat(const char *filename); // file type is inferred from extension
 	bool saveFormat(const char *filename, const char*file_type);
@@ -157,6 +160,7 @@ public:
 
 	// Euler operations (topology modifying)
 	bool canSplitEdge(Vertex::Halfedge_handle h);
+	void makeHole(Vertex *v, int noRings);
 	void splitEdge(Vertex::Halfedge_handle h, int mode=1); // 1 - middle, 2 - projection of the 3rd vertex
 	bool canCollapseEdge(Vertex::Halfedge_handle h);
 	bool canCollapseCenterVertex(Vertex::Vertex_handle v);
@@ -182,7 +186,8 @@ public:
 	void invert();
 	void move(float dx, float dy, float dz);
 	void scale(float dx, float dy, float dz);
-	void rotate(Affine_3 &rot, bool meshCentered);
+	void rotate(float angle_x_deg, float angle_y_deg, float angle_z_deg, bool meshCentered);
+	void affine(Affine_3 &rot, bool meshCentered);
 	void replaceWith(Polyhedron &other, float relative_scale=1);
 	void unionWith(Mesh& other);
 	
@@ -194,13 +199,20 @@ public:
 	Kernel::Point_3 closestPoint(Kernel::Point_3 &the_point);	
 	Kernel::Point_3 closestColorPoint(Kernel::Point_3 &the_point, float *givclr);	
 	Vertex* vertexMapping(Kernel::Point_3 &the_point);
+	Vertex* getVertexById(int id);
+	
 	Kernel::Vector_3 computeDistanceFromPoint(Kernel::Point_3 &the_point, int mode=0);
 
 	float distanceTo(Mesh &other, bool reinit_search_structures=false);
-
+	float getSurfacePercentageRadius(float percentage);
 	void removeSelfIntersections();
 
-	static std::vector< std::pair<Vertex*,int> > getNeighbourhood(Vertex& v,int ring_size);
+	static std::vector< std::pair<Vertex*,int> > getRingNeighbourhood(std::vector<Vertex*> vertices,int ring_size, bool include_original);
+	static std::vector< std::pair<Vertex*,int> > getRingNeighbourhood(Vertex& v,int ring_size, bool include_original=false);
+	static std::vector< std::pair<Vertex*,float> > getGeodesicNeighbourhood(Vertex& v, float geo_size, bool include_original);
+	
+
+	
 	double oppositeAngle(Vertex::Halfedge_handle h);
 
 	void evolve(float sign=1);
@@ -211,12 +223,11 @@ public:
 	
 	void dilate(double delta);
 	void smooth(double delta, int mode=0, bool only_visible=false);	
-	void convolve(double std_dev_ratio=1.25, bool add_to_history=false);
+	void convolve(double std_dev_ratio=1.25, bool add_to_history=false, bool print_stats=false);
 	
 	void bilateralSmooth(double sigma_c, double sigma_s);
 	void perturb(double maxDelta);
-	void noise(float sigma, char mode='C', int type=0); // mode - C - colour; G - geometry
-	void remesh(int method=Remesh_Sqrt3);
+	void remesh(int method=Remesh_Sqrt3, int steps=1);
 
 	void displayInfo();
 
@@ -227,7 +238,8 @@ public:
 	Point smooth_old_vertex(Vertex_handle v) const;
 	void remeshWithThreshold(float edge_threshold=0);
 
-	void setVertexQuality(QualityComputationMethod qual);
+	void setMeshQuality(QualityComputationMethod qual);
+	void setMeshQualityViaLinearSystem(QualityComputationMethod qual);
 	
 	void resetVertexWeights();
 	void computeVertexPriorWeights();
@@ -235,12 +247,17 @@ public:
 	void computeMeshStats();
 
 	void computeVertexNormal(Vertex& v);
+	void computeVertexRobustNormal(Vertex& v, float maxGeodesic);	
 	void computeVertexConvolution(Vertex& v, float stddev);	
 	void computeVertexCurvature(Vertex& v);
 	void computeVertexLaplacian(Vertex& v);
 	void computeVertexLaplacianDeriv(Vertex& v);
 	void computeVertexQuality(Vertex& v, QualityComputationMethod qual);
+
+	static float  computeVertexDirectionalGradient ( Vertex& v, Vertex& dir_u, QualityComputationMethod qual);
 	static Vector computeVertexGradient ( Vertex& v, QualityComputationMethod qual);
+	static Vector computeVertexGradientViaLinearSystem ( Vertex& v, QualityComputationMethod qual);
+
 	static float computeVertex2ndPartialDeriv( Vertex& v, Vector &dir_1, Vector &dir_2);
 	static bool isCorner(Vertex &v, float ratio_threshold);
 	
@@ -249,8 +266,8 @@ public:
 	
 	void generateRandomColors();
 
-	void updateMeshData();
-	void resetVertexIndices();
+	void updateMeshData(bool bComputeCurvature=true, bool bComputeNormals=true);
+	void resetSimplexIndices(bool bResetVertices = true, bool bResetFacets = true);
 	
 	void computeQualityPercentileBoundaries(float &lower_bound, float &upper_bound, float percentile=0.1, int bins=10000);
 	void computeQualityDiffPercentileBoundaries(float &lower_bound, float &upper_bound, float percentile=0.1, int bins=10000);	
@@ -289,6 +306,8 @@ public:
 	// self intersection removal
 	vector<KernelExact::Segment_3*> inter_segments;
 	std::map <Kernel::Point_3, Vertex*>vertex_mapping;
+	vector<Vertex*> id_mapping;
+	
 	float bounding_box[6]; //bounding box
 	//seed triangle finding
 	void *_AABB_tree;
@@ -330,6 +349,8 @@ private:
 	void _updateNormal(Triangle_Job &job);
 	Facet_handle _getSeedTriangle();
 	bool _findStartupCDTriangle(Triangle_Job &job);
+	
+	float fRobustNormalMaxDistance;
 
 };
 

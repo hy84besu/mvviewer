@@ -119,10 +119,9 @@ class ColorMap
 			float min, max, delta;
 			float h, s, v; 
 
-			min = (r < g) ? ( (r < b) ? r : b ) : g; 
-			max = (r > g) ? ( (r > b) ? r : b ) : g; 
-			//min = MIN( r, g, b );
-			//max = MAX( r, g, b );
+			min = std::min(r,std::min(g,b));
+			max = std::max(r,std::max(g,b));
+
 			v = max;				// v
 
 			delta = max - min;
@@ -135,7 +134,8 @@ class ColorMap
 				h = -1;
 				return;
 			}
-
+			if (delta==0) delta = 0.001f;
+			
 			if( r == max )
 				h = ( g - b ) / delta;		// between yellow & magenta
 			else if( g == max )

@@ -3,24 +3,22 @@ INCLUDEPATH += src/MVViewer src/Utils
 
 CONFIG+= uic
 QT+=xml network core gui opengl
-LIBS+=-lQGLViewer
-
-
+CONFIG -= x86
 macx{
-	QMAKE_LFLAGS += -L./
-	CONFIG+= app_bundle x86
-	INCLUDEPATH+=/sw/include
-	LIBS+=-L/sw/lib -L/usr/local/lib
-	LIBS+=-framework vecLib -Wl,-dylib_file,/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
-	
+	QMAKE_MOC = $$[QT_INSTALL_BINS]/moc -DBOOST_TT_HAS_OPERATOR_HPP_INCLUDED
+#	LIBS+= -L/usr/local/lib
 	LIBS+=-framework vecLib
+#	LIBS+=-lQGLViewer
+	LIBS+=-framework QGLViewer
+
 #	LIBS+=-framework TransforMesh
 #	LIBS+=-lTransforMesh
 	QMAKE_CXXFLAGS += -ffast-math -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer # -mfpmath=sse
 }
 
 linux-g++{
-#	LIBS+= -lTransforMesh
+	LIBS+=-lqglviewer
+#	LIBS+=-lTransforMesh 
 	QMAKE_CXXFLAGS += -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse #-ffast-math
 }
 
@@ -40,11 +38,16 @@ HEADERS += src/MVViewer/Camera.h \
            src/MVViewer/Rigide.h \
            src/MVViewer/Matrix3x3.h \
            src/MVViewer/Matrix3x4.h \
-           src/MVViewer/Vector3.h
-FORMS += src/MVViewer/MVWindow.Qt4.ui \
-	 src/MVViewer/MVTransformProps.Qt4.ui \
-	 src/MVViewer/BoundingBoxProps.Qt4.ui
+           src/MVViewer/Vector3.h \
+	   src/MVViewer/CurvatureSegmentation.h \
+	   src/MVViewer/GeoSegmentation.h
+FORMS += src/MVViewer/MVWindow.ui \
+	 src/MVViewer/MVTransformProps.ui \
+	 src/MVViewer/BoundingBoxProps.ui
 SOURCES += src/MVViewer/MVData.cpp \
            src/MVViewer/Resample.cpp \
            src/MVViewer/MVViewer.cpp \
-           src/MVViewer/OpenGLContext.cpp
+           src/MVViewer/OpenGLContext.cpp \
+	   src/MVViewer/CurvatureSegmentation.cpp \
+	   src/MVViewer/GeoSegmentation.cpp
+

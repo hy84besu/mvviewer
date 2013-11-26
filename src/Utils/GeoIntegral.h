@@ -12,7 +12,7 @@
 
 #ifndef GEOPATCHES_H
 #define GEOPATCHES_H
-#include "Mesh.h"
+#include "../TransforMesh/Mesh.h"
 #include <algorithm>
 
 

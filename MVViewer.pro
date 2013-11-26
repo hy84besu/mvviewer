@@ -8,4 +8,4 @@ macx{
 	CONFIG+= app_bundle x86
 }
 
-SOURCES += src/mvviewer_main.cc 
+SOURCES += src/MVViewerMain/mvviewer_main.cc 

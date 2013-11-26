@@ -1,3 +1,21 @@
+CMAKE
+-----
+
+NEWS: Experimental CMAKE build system has been added for all projects (TransforMesh, MVViewer, MVViewerMain, MeshMorphing, MeshMatching). I plan on phasing out the QMAKE build system (from Qt), since it is not properly maintained on Mac OS.X. In addition, at least for TransforMesh and MeshMatching projects, there should not be a Qt dependency (MeshMatching still has a Qt dependency, but it will be removed in the near future).
+
+To use it, install cmake, then do the following from the current folder:
+mkdir cmake_build
+cd cmake_build
+cmake .. 
+make
+
+
+
+QMAKE
+----
+
+This is the old build system. For now it is still supported, even though I plan on phasing it out. Please try using the cmake build system and report if you find any problems. 
+
 Each project has his .pro file.
 
 One should run qmake to generate the Makefile first, then make it.

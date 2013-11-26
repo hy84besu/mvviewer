@@ -16,7 +16,7 @@
 #include <QFileDialog>
 
 #if QT_VERSION >= 0x040000
-#include "ui_MeshMorphingProperties.Qt4.h"
+#include "ui_MeshMorphingProperties.h"
 
 #define BOOL_TO_STATE(X) ((X)?(Qt::Checked):(Qt::Unchecked))	
 

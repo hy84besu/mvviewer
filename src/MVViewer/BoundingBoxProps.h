@@ -10,7 +10,7 @@
 #ifndef BOUNDING_BOX_PROPS_H
 #define BOUNDING_BOX_PROPS_H
 
-#include "ui_BoundingBoxProps.Qt4.h"
+#include "ui_BoundingBoxProps.h"
 #include "MVData.h"
 
 #include <QDialog>

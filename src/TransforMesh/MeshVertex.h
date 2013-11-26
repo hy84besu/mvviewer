@@ -52,10 +52,11 @@ public:
     int id; // do not trust it if the mesh is being modified by splits and joins .. 
     float color[3];
 
-    #define NFLAGS 3
+    #define NFLAGS 4
     bool flag[NFLAGS]; // 0 - used for euler operations; shared with OpenGL DrawGeometry mode 'S' - SilhouettePauTerm
 		  // 1 - remeshing with threshold; border edge; MeshMatching when computing the detector in scale space
-		  // 2 - used for visibility
+		  // 2 - used for visibility; MeshMatching when computing the detector in scale space
+		  // 3 - used in MeshMathing
 
 
     Norm delta_tmp;	
@@ -128,6 +129,10 @@ public:
     Normal_3&       normal()       { return norm; }
     const Normal_3& normal() const { return norm; }
 
+    Norm&       tmp_normal()       { return laplac_deriv; }
+    const Norm& tmp_normal() const { return laplac_deriv; }
+
+	
     Norm&       laplacian()       { return laplac; }
     const Norm& laplacian() const { return laplac; }
 
@@ -143,6 +148,10 @@ public:
     float&       quality()       { return qual; }
     const float& quality() const { return qual; }
 
+    float&       quality_imported()       { return tmp_float; }
+    const float& quality_imported() const { return tmp_float; }
+
+	
     float&       quality_prev()       { return vh_dist; }
     const float& quality_prev() const { return vh_dist; }
 

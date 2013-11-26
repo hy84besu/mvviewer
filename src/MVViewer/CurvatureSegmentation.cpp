@@ -10,7 +10,7 @@
 //
 //
 #include "CurvatureSegmentation.h"
-
+#include <queue>
 
 
 CurvatureSegmention::CurvatureSegmention(Mesh* _m, bool _colorFacets) {
@@ -63,7 +63,7 @@ void computeVectorStats( vector<float>& v, float& mean, float& std_dev, float& s
 int CurvatureSegmention::changeSegmentId(Facet_handle f, int new_id) {
 	vector<int> result;
 	int current_id=f->id;
-	queue<Halfedge_handle> edgeQueue;
+	std::queue<Halfedge_handle> edgeQueue;
 
 	int neigh_size=0;
 	HF_circulator hh = f->facet_begin();
@@ -102,7 +102,7 @@ void CurvatureSegmention::segment(float threshold, int island_threshold) { // th
 	
 	cleanUp();
 	float curv_bound_1, curv_bound_2;
-	m->setVertexQuality(Mesh::Qual_Mean_Curv);
+	m->setMeshQuality(Mesh::Qual_Mean_Curv);
 	m->computeQualityPercentileBoundaries(curv_bound_1,curv_bound_2,0.1);
 	
 

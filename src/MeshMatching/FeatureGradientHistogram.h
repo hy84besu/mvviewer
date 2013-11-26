@@ -17,17 +17,16 @@
 	
 class FeatureGradientHistogram {
 public:
-	FeatureGradientHistogram(int feature_type_, int no_rings_, int no_bins_centroid_, int no_bins_groups_ , int no_bins_orientations_ , double spatial_influence_);
+	FeatureGradientHistogram(int no_rings_, float avg_edge_size_, int no_bins_centroid_, int no_bins_groups_ , int no_bins_orientations_ , double spatial_influence_);
 
 	Point rotatePointAroundVector(Vector axis, Point point, float angle);
 	float angleWithRefVector(Vector x, Vector origin, Vector normal);
-	Vector getGradient(Vertex& v, int feat_type);
+	Vector getGradient(Vertex& v);
 	void computeFeatureVector(vector<float>& result, Vertex &v);
-	void computeFeatureVector(vector<float>& result, Vertex &v, int feat_type);
 
 private:
-	int feature_type; // 0 - color; 1 - mean curvature; 2 - gaussian curvature; 3 - color + mean_curv
 	int no_rings;
+	float avg_edge_size;
 	int no_bins_centroid;
 	int no_bins_groups;
 	int no_bins_orientations;

@@ -85,12 +85,12 @@ while(<VECTS>) {
 	$point2[$num][0] = $array[4];
 	$point2[$num][1] = $array[5];
 	$point2[$num][2] = $array[6];
-	if($point1[$num][0] != $point2[$num][0] && $point1[$num][1] != $point2[$num][1] && $point1[$num][2] != $point2[$num][2]) { # Comment this line if you want all the points printed 
+	#if($point1[$num][0] != $point2[$num][0] && $point1[$num][1] != $point2[$num][1] && $point1[$num][2] != $point2[$num][2] ) { # Comment this line if you want all the points printed 
 		# $point2[$num][0] += $apart;
 		# $point2[$num][1] += $apart;
 		$point2[$num][$apartDim] += $apart;
 		$num++; 
-	}# Comment this line if you want all the points printed 
+	#}# Comment this line if you want all the points printed 
 }
 close(VECTS);
 print "        VECT\n";

@@ -11,6 +11,7 @@
 //
 #include "GeoIntegral.h"
 #include "ColorMap.h"
+#include <queue>
 
 GeoIntegral::GeoIntegral() {
 	m = NULL;
@@ -36,7 +37,7 @@ void GeoIntegral::load(Mesh* _m, int _colorFacets) {
 int GeoIntegral::changePatchId(Vertex_handle f, int new_id) {
 	vector<int> result;
 	int current_id=f->id;
-	queue<Halfedge_handle> edgeQueue;
+	std::queue<Halfedge_handle> edgeQueue;
 
 	int neigh_size=0;
 	HV_circulator hh = f->vertex_begin();

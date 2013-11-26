@@ -89,7 +89,7 @@ public:
 		Vector v2=h->prev()->vertex()->point() - h->vertex()->point();
 		
 		if ((v_norm(v1)==0) || (v_norm(v2)==0)) {
-			std::cout << "points coinciding" <<std::endl;
+			std::cout << "\r WARNING: points coinciding"; //<<std::endl;
 			this->normal() = Vector(0,0,1);
 			return;
 		}
@@ -100,9 +100,9 @@ public:
 		}
 		
 		typename MeshFacet::Normal_3 normal = CGAL::cross_product(v1,v2);
-		if ((isnan(v_norm(normal))==false) && (v_norm(normal)!=0)) this->normal() = normal / v_norm(normal);
+		if ((std::isnan(v_norm(normal))==false) && (v_norm(normal)!=0)) this->normal() = normal / v_norm(normal);
 		else {
-			std::cout << "normal computation of a degenerate triangle -> v_norm(normal)=" << v_norm(normal) << std::endl;
+			std::cout << "\r WARNING: normal computation of a degenerate triangle -> v_norm(normal)=" << v_norm(normal); //<< std::endl;
 //			std::cout << h->vertex()->point() << " " << h->next()->vertex()->point() << " " << h->prev()->vertex()->point() << std::endl;
 			this->normal() = Vector(0,0,0);
 		}
