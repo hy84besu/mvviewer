@@ -1,0 +1,50 @@
+DEPENDPATH += src/MVViewer
+INCLUDEPATH += src/MVViewer src/Utils 
+
+CONFIG+= uic
+QT+=xml network core gui opengl
+LIBS+=-lQGLViewer
+
+
+macx{
+	QMAKE_LFLAGS += -L./
+	CONFIG+= app_bundle x86
+	INCLUDEPATH+=/sw/include
+	LIBS+=-L/sw/lib -L/usr/local/lib
+	LIBS+=-framework vecLib -Wl,-dylib_file,/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+	
+	LIBS+=-framework vecLib
+#	LIBS+=-framework TransforMesh
+#	LIBS+=-lTransforMesh
+	QMAKE_CXXFLAGS += -ffast-math -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer # -mfpmath=sse
+}
+
+linux-g++{
+#	LIBS+= -lTransforMesh
+	QMAKE_CXXFLAGS += -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse #-ffast-math
+}
+
+# Input
+HEADERS += src/MVViewer/Camera.h \
+           src/MVViewer/CImg.h \
+           src/MVViewer/CImg_mod.h \
+           src/MVViewer/MVData.h \
+           src/MVViewer/MVViewer.h \
+           src/MVViewer/MVWindow.h \
+	   src/MVViewer/MVTransformProps.h \
+	   src/MVViewer/BoundingBoxProps.h \
+           src/MVViewer/MVViewerRendering.h \
+           src/MVViewer/OpenGLContext.h \
+           src/MVViewer/Resample.h \
+           src/MVViewer/RGB.h \
+           src/MVViewer/Rigide.h \
+           src/MVViewer/Matrix3x3.h \
+           src/MVViewer/Matrix3x4.h \
+           src/MVViewer/Vector3.h
+FORMS += src/MVViewer/MVWindow.Qt4.ui \
+	 src/MVViewer/MVTransformProps.Qt4.ui \
+	 src/MVViewer/BoundingBoxProps.Qt4.ui
+SOURCES += src/MVViewer/MVData.cpp \
+           src/MVViewer/Resample.cpp \
+           src/MVViewer/MVViewer.cpp \
+           src/MVViewer/OpenGLContext.cpp

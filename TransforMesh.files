@@ -1,0 +1,62 @@
+DEPENDPATH += . src src/TransforMesh src/CEP src/Utils tmp
+INCLUDEPATH += . src src/TransforMesh src/CEP src/Utils tmp
+
+CONFIG=thread warn_off debug qt x86_64
+QT+= core
+OBJECTS_DIR=tmp
+MOC_DIR=tmp
+UI_DIR=tmp
+
+QMAKE_CXXFLAGS_RELEASE-=-O3
+QMAKE_CXXFLAGS_RELEASE*=-DNDEBUG -DNTRACE -O3
+
+DEFINES+= CGAL_USE_F2C CGAL_NDEBUG CONVEX_SEG
+LIBS+=-L/usr/local/lib -L/usr/X11R6/lib -lCGAL -lCGAL_Core -lCGAL_ImageIO -lCGAL_PDB -lz -lmpfr -lgmpxx -lgmp -lm -lc -fno-common -lboost_thread-mt
+
+
+macx{
+	INCLUDEPATH+=/opt/local/include /usr/local/include
+	LIBS+=-L/opt/local/lib
+#	CONFIG+= lib_bundle x86
+	#LIBS+=-framework vecLib -Wl,-dylib_file,/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+	QMAKE_CXXFLAGS += -ffast-math -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse
+	#QMAKE_CFLAGS_X86 += -ffast-math -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse
+	QMAKE_CXX=/usr/bin/gcc-4.2
+}
+
+macxold{
+	INCLUDEPATH+=/sw/include /usr/local/include
+	LIBS+=-L/sw/lib
+#	CONFIG+= lib_bundle x86
+	#LIBS+=-framework vecLib -Wl,-dylib_file,/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+	QMAKE_CXXFLAGS += -ffast-math -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse
+	#QMAKE_CFLAGS_X86 += -ffast-math -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse
+	QMAKE_CXX=/usr/bin/gcc-4.2
+}
+
+linux-g++{
+	CONFIG-=debug
+	CONFIG+=release
+	QMAKE_CXXFLAGS += -msse  -msse2 -msse3 -fno-gcse -fomit-frame-pointer -mfpmath=sse #-ffast-math
+}
+
+# Input
+HEADERS += src/TransforMesh/Kernels.h \
+           src/TransforMesh/Mesh.h \
+           src/TransforMesh/MeshError.h \
+           src/TransforMesh/MeshItems.h \
+           src/TransforMesh/MeshVertex.h \
+           src/TransforMesh/MeshFacet.h \
+           src/TransforMesh/MeshHelper.h \
+	   src/TransforMesh/CurvatureSegmentation.h\
+	   src/TransforMesh/GeoIntegral.h \
+	   src/TransforMesh/GeoSegmentation.h \
+   	   src/TransforMesh/FeatureGradientHistogram.h \
+	   src/Utils/ColorMap.h \
+           src/Utils/PointSet.h
+
+SOURCES += src/TransforMesh/Mesh.cpp \
+   	   src/TransforMesh/FeatureGradientHistogram.cpp \
+	   src/TransforMesh/CurvatureSegmentation.cpp \
+	   src/TransforMesh/GeoSegmentation.cpp \
+	   src/TransforMesh/GeoIntegral.cpp 

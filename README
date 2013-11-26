@@ -1,0 +1,9 @@
+Each project has his .pro file.
+
+One should run qmake to generate the Makefile first, then make it.
+Example:
+
+qmake-qt4 TransforMesh.pro -o Makefile_TransforMesh
+make -f Makefile_TransforMesh -j4
+
+

@@ -1,0 +1,660 @@
+<ui version="4.0" >
+ <class>MVTransformProps</class>
+ <widget class="QDialog" name="MVTransformProps" >
+  <property name="geometry" >
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>577</width>
+    <height>499</height>
+   </rect>
+  </property>
+  <property name="windowTitle" >
+   <string>Dialog</string>
+  </property>
+  <layout class="QVBoxLayout" >
+   <item>
+    <widget class="QGroupBox" name="groupBox_5" >
+     <property name="maximumSize" >
+      <size>
+       <width>16777215</width>
+       <height>40</height>
+      </size>
+     </property>
+     <property name="title" >
+      <string/>
+     </property>
+     <layout class="QHBoxLayout" >
+      <item>
+       <widget class="QRadioButton" name="radioMove" >
+        <property name="text" >
+         <string>Move</string>
+        </property>
+        <property name="checked" >
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="radioRotate" >
+        <property name="text" >
+         <string>Rotate</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="radioScale" >
+        <property name="text" >
+         <string>Scale</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" >
+     <item>
+      <widget class="QGroupBox" name="groupBoxMove" >
+       <property name="enabled" >
+        <bool>true</bool>
+       </property>
+       <property name="title" >
+        <string>Move</string>
+       </property>
+       <layout class="QVBoxLayout" >
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label" >
+            <property name="text" >
+             <string>X:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleMoveX" >
+            <property name="decimals" >
+             <number>4</number>
+            </property>
+            <property name="minimum" >
+             <double>-10000.000000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>10000.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>0.100000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_2" >
+            <property name="text" >
+             <string>Y:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleMoveY" >
+            <property name="decimals" >
+             <number>4</number>
+            </property>
+            <property name="minimum" >
+             <double>-10000.000000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>10000.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>0.100000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_3" >
+            <property name="text" >
+             <string>Z:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleMoveZ" >
+            <property name="decimals" >
+             <number>4</number>
+            </property>
+            <property name="minimum" >
+             <double>-10000.000000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>10000.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>0.100000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <spacer>
+          <property name="orientation" >
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0" >
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="groupBoxRotate" >
+       <property name="enabled" >
+        <bool>false</bool>
+       </property>
+       <property name="title" >
+        <string>Rotate</string>
+       </property>
+       <layout class="QVBoxLayout" >
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_6" >
+            <property name="text" >
+             <string>X (deg):</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleRotateX" >
+            <property name="minimum" >
+             <double>-180.000000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>180.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>5.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_8" >
+            <property name="text" >
+             <string>Y (deg):</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleRotateY" >
+            <property name="minimum" >
+             <double>-180.000000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>180.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>5.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_7" >
+            <property name="text" >
+             <string>Z (deg):</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleRotateZ" >
+            <property name="minimum" >
+             <double>-180.000000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>180.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>5.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="groupBox_4" >
+          <property name="title" >
+           <string>Mode</string>
+          </property>
+          <layout class="QGridLayout" >
+           <item row="0" column="0" >
+            <widget class="QRadioButton" name="radioRotateMeshOrigin" >
+             <property name="text" >
+              <string>Mesh Center</string>
+             </property>
+             <property name="checked" >
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="0" >
+            <widget class="QRadioButton" name="radioRotateWorldOrigin" >
+             <property name="text" >
+              <string>World Center</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer>
+          <property name="orientation" >
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0" >
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="groupBoxScale" >
+       <property name="enabled" >
+        <bool>false</bool>
+       </property>
+       <property name="title" >
+        <string>Scale</string>
+       </property>
+       <layout class="QVBoxLayout" >
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_9" >
+            <property name="text" >
+             <string>X:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleScaleX" >
+            <property name="decimals" >
+             <number>3</number>
+            </property>
+            <property name="minimum" >
+             <double>0.001000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>10000.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>0.100000000000000</double>
+            </property>
+            <property name="value" >
+             <double>1.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_11" >
+            <property name="text" >
+             <string>Y:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleScaleY" >
+            <property name="decimals" >
+             <number>3</number>
+            </property>
+            <property name="minimum" >
+             <double>0.001000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>10000.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>0.100000000000000</double>
+            </property>
+            <property name="value" >
+             <double>1.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" >
+          <item>
+           <widget class="QLabel" name="label_10" >
+            <property name="text" >
+             <string>Z:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer>
+            <property name="orientation" >
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0" >
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="doubleScaleZ" >
+            <property name="decimals" >
+             <number>3</number>
+            </property>
+            <property name="minimum" >
+             <double>0.001000000000000</double>
+            </property>
+            <property name="maximum" >
+             <double>10000.000000000000000</double>
+            </property>
+            <property name="singleStep" >
+             <double>0.100000000000000</double>
+            </property>
+            <property name="value" >
+             <double>1.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <spacer>
+          <property name="orientation" >
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0" >
+           <size>
+            <width>20</width>
+            <height>91</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox" >
+     <property name="title" >
+      <string>Bounding Box</string>
+     </property>
+     <layout class="QGridLayout" >
+      <item row="0" column="0" >
+       <widget class="QLabel" name="label_4" >
+        <property name="layoutDirection" >
+         <enum>Qt::LeftToRight</enum>
+        </property>
+        <property name="text" >
+         <string>X:</string>
+        </property>
+        <property name="alignment" >
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" >
+       <widget class="QLabel" name="label_X1" >
+        <property name="text" >
+         <string>TextLabel</string>
+        </property>
+        <property name="alignment" >
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2" >
+       <widget class="QLabel" name="label_X2" >
+        <property name="text" >
+         <string>TextLabel</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" >
+       <widget class="QLabel" name="label_5" >
+        <property name="text" >
+         <string>Y:</string>
+        </property>
+        <property name="alignment" >
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" >
+       <widget class="QLabel" name="label_Y1" >
+        <property name="text" >
+         <string>TextLabel</string>
+        </property>
+        <property name="alignment" >
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2" >
+       <widget class="QLabel" name="label_Y2" >
+        <property name="text" >
+         <string>TextLabel</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0" >
+       <widget class="QLabel" name="label_12" >
+        <property name="text" >
+         <string>Z:</string>
+        </property>
+        <property name="alignment" >
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1" >
+       <widget class="QLabel" name="label_Z1" >
+        <property name="text" >
+         <string>TextLabel</string>
+        </property>
+        <property name="alignment" >
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="2" >
+       <widget class="QLabel" name="label_Z2" >
+        <property name="text" >
+         <string>TextLabel</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonOk" >
+     <property name="orientation" >
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons" >
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonOk</sender>
+   <signal>accepted()</signal>
+   <receiver>MVTransformProps</receiver>
+   <slot>accept()</slot>
+   <hints>
+    <hint type="sourcelabel" >
+     <x>248</x>
+     <y>254</y>
+    </hint>
+    <hint type="destinationlabel" >
+     <x>157</x>
+     <y>274</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>buttonOk</sender>
+   <signal>rejected()</signal>
+   <receiver>MVTransformProps</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel" >
+     <x>316</x>
+     <y>260</y>
+    </hint>
+    <hint type="destinationlabel" >
+     <x>286</x>
+     <y>274</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
